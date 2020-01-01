@@ -26,7 +26,7 @@ import unicodedata
 import six
 from six.moves import range
 import tensorflow.compat.v1 as tf
-import tensorflow_hub as hub
+# import tensorflow_hub as hub
 import sentencepiece as spm
 
 SPIECE_UNDERLINE = u"▁".encode("utf-8")
@@ -256,7 +256,7 @@ class FullTokenizer(object):
   @classmethod
   def from_hub_module(cls, hub_module, spm_model_file):
     """Get the vocab file and casing info from the Hub module."""
-    with tf.Graph().as_default():
+    '''with tf.Graph().as_default():
       albert_module = hub.Module(hub_module)
       tokenization_info = albert_module(signature="tokenization_info",
                                         as_dict=True)
@@ -266,7 +266,8 @@ class FullTokenizer(object):
              tokenization_info["do_lower_case"]])
     return FullTokenizer(
         vocab_file=vocab_file, do_lower_case=do_lower_case,
-        spm_model_file=spm_model_file)
+        spm_model_file=spm_model_file)'''
+    raise NotImplementedError("from_hub_module is not implemented")
 
   def tokenize(self, text):
     if self.sp_model:

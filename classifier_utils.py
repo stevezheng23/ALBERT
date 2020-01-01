@@ -25,7 +25,7 @@ import modeling
 import optimization
 import tokenization
 import tensorflow.compat.v1 as tf
-import tensorflow_hub as hub
+# import tensorflow_hub as hub
 from tensorflow.contrib import data as contrib_data
 from tensorflow.contrib import metrics as contrib_metrics
 from tensorflow.contrib import tpu as contrib_tpu
@@ -769,7 +769,7 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
 def _create_model_from_hub(hub_module, is_training, input_ids, input_mask,
                            segment_ids):
   """Creates an ALBERT model from TF-Hub."""
-  tags = set()
+  '''tags = set()
   if is_training:
     tags.add("train")
   albert_module = hub.Module(hub_module, tags=tags, trainable=True)
@@ -782,7 +782,8 @@ def _create_model_from_hub(hub_module, is_training, input_ids, input_mask,
       signature="tokens",
       as_dict=True)
   output_layer = albert_outputs["pooled_output"]
-  return output_layer
+  return output_layer'''
+  raise NotImplementedError("_create_model_from_hub is not implemented")
 
 
 def _create_model_from_scratch(albert_config, is_training, input_ids,

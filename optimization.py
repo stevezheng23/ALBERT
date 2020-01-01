@@ -33,7 +33,7 @@ from tensorflow.python.ops import resource_variable_ops
 
 
 def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu,
-                     optimizer="adamw", poly_power=1.0, start_warmup_step=0):
+                     optimizer="adam", poly_power=1.0, start_warmup_step=0):
   """Creates an optimizer training op."""
   global_step = tf.train.get_or_create_global_step()
 

@@ -264,10 +264,10 @@ def main(_):
       if FLAGS.do_train:
         num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
-    # Pre-shuffle the input to avoid having to make a very large shuffle
-    # buffer in in the `input_fn`.
-    rng = random.Random(6066)
-    rng.shuffle(train_examples)
+  # Pre-shuffle the input to avoid having to make a very large shuffle
+  # buffer in in the `input_fn`.
+  rng = random.Random(6066)
+  rng.shuffle(train_examples)
 
   model_fn = squad_utils.v2_model_fn_builder(
       albert_config=albert_config,

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # Lint as: python2, python3
-"""Utility functions for SQuAD v1.1/v2.0 datasets."""
+"""Utility functions for QuAC v0.2 datasets."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -56,7 +56,7 @@ RawResultV2 = collections.namedtuple(
      "end_top_log_probs", "end_top_index", "cls_logits"])
 
 
-class SquadExample(object):
+class QuacExample(object):
   """A single training/test example for simple sequence classification.
 
      For examples without an answer, the start and end position are -1.
@@ -132,8 +132,8 @@ class InputFeatures(object):
     self.p_mask = p_mask
 
 
-def read_squad_examples(input_file, is_training):
-  """Read a SQuAD json file into a list of SquadExample."""
+def read_quac_examples(input_file, is_training):
+  """Read a QuAC json file into a list of QuacExample."""
   with tf.gfile.Open(input_file, "r") as reader:
     input_data = json.load(reader)["data"]
 
@@ -162,7 +162,7 @@ def read_squad_examples(input_file, is_training):
             start_position = -1
             orig_answer_text = ""
 
-        example = SquadExample(
+        example = QuacExample(
             qas_id=qas_id,
             question_text=question_text,
             paragraph_text=paragraph_text,
@@ -658,7 +658,7 @@ def input_fn_builder(input_file, seq_length, is_training,
       "input_mask": tf.FixedLenFeature([seq_length], tf.int64),
       "segment_ids": tf.FixedLenFeature([seq_length], tf.int64),
   }
-  # p_mask is not required for SQuAD v1.1
+  # p_mask is not required for QuAC v0.2
   if is_v2:
     name_to_features["p_mask"] = tf.FixedLenFeature([seq_length], tf.int64)
 
@@ -725,11 +725,11 @@ def create_v1_model(albert_config, is_training, input_ids, input_mask,
   hidden_size = final_hidden_shape[2]
 
   output_weights = tf.get_variable(
-      "cls/squad/output_weights", [2, hidden_size],
+      "cls/quac/output_weights", [2, hidden_size],
       initializer=tf.truncated_normal_initializer(stddev=0.02))
 
   output_bias = tf.get_variable(
-      "cls/squad/output_bias", [2], initializer=tf.zeros_initializer())
+      "cls/quac/output_bias", [2], initializer=tf.zeros_initializer())
 
   final_hidden_matrix = tf.reshape(final_hidden,
                                    [batch_size * seq_length, hidden_size])
@@ -1016,7 +1016,7 @@ def write_predictions_v1(result_dict, all_examples, all_features,
   return all_predictions
 
 
-####### following are from official SQuAD v1.1 evaluation scripts
+####### following are from official QuAC v0.2 evaluation scripts
 def normalize_answer_v1(s):
   """Lower text and remove punctuation, articles and extra whitespace."""
 
@@ -1086,8 +1086,8 @@ def evaluate_v1(dataset, predictions):
 
   return {"exact_match": exact_match, "f1": f1}
 
-####### above are from official SQuAD v1.1 evaluation scripts
-####### following are from official SQuAD v2.0 evaluation scripts
+####### above are from official QuAC v0.2 evaluation scripts
+####### following are from official QuAC v0.2 evaluation scripts
 def make_qid_to_has_ans(dataset):
   qid_to_has_ans = {}
   for article in dataset:
@@ -1215,7 +1215,7 @@ def merge_eval(main_eval, new_eval, prefix):
   for k in new_eval:
     main_eval['%s_%s' % (prefix, k)] = new_eval[k]
 
-####### above are from official SQuAD v2.0 evaluation scripts
+####### above are from official QuAC v0.2  evaluation scripts
 
 def accumulate_predictions_v2(result_dict, cls_dict, all_examples,
                               all_features, all_results, n_best_size,

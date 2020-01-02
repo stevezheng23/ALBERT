@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # Lint as: python2, python3
-"""Run ALBERT on SQuAD v2.0 using sentence piece tokenization."""
+"""Run ALBERT on QuAC v0.2 using sentence piece tokenization."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -26,7 +26,7 @@ import random
 import time
 
 import modeling
-import squad_utils
+import quac_utils
 import tokenization
 import six
 import tensorflow as tf
@@ -64,11 +64,11 @@ flags.DEFINE_string(
 
 ## Other parameters
 flags.DEFINE_string("train_file", None,
-                    "SQuAD json for training. E.g., train-v1.1.json")
+                    "QuAC json for training. E.g., train-v0.2.json")
 
 flags.DEFINE_string(
     "predict_file", None,
-    "SQuAD json for predictions. E.g., dev-v1.1.json or test-v1.1.json")
+    "QuAC json for predictions. E.g., dev-v0.2.json or test-v0.2.json")
 
 flags.DEFINE_string("train_feature_file", None,
                     "training feature file.")
@@ -83,7 +83,7 @@ flags.DEFINE_string(
 
 flags.DEFINE_string(
     "init_checkpoint", None,
-    "Initial checkpoint (usually from a pre-trained BERT model).")
+    "Initial checkpoint (usually from a pre-trained ALBERT model).")
 
 flags.DEFINE_bool(
     "do_lower_case", True,
@@ -91,7 +91,7 @@ flags.DEFINE_bool(
     "models and False for cased models.")
 
 flags.DEFINE_integer(
-    "max_seq_length", 384,
+    "max_seq_length", 512,
     "The maximum total input sequence length after WordPiece tokenization. "
     "Sequences longer than this will be truncated, and sequences shorter "
     "than this will be padded.")
@@ -110,12 +110,12 @@ flags.DEFINE_bool("do_train", False, "Whether to run training.")
 
 flags.DEFINE_bool("do_predict", False, "Whether to run eval on the dev set.")
 
-flags.DEFINE_integer("train_batch_size", 32, "Total batch size for training.")
+flags.DEFINE_integer("train_batch_size", 48, "Total batch size for training.")
 
-flags.DEFINE_integer("predict_batch_size", 8,
+flags.DEFINE_integer("predict_batch_size", 12,
                      "Total batch size for predictions.")
 
-flags.DEFINE_float("learning_rate", 5e-5, "The initial learning rate for Adam.")
+flags.DEFINE_float("learning_rate", 3e-5, "The initial learning rate for Adam.")
 
 flags.DEFINE_float("num_train_epochs", 3.0,
                    "Total number of training epochs to perform.")
@@ -137,7 +137,7 @@ flags.DEFINE_integer(
     "nbest_predictions.json output file.")
 
 flags.DEFINE_integer(
-    "max_answer_length", 30,
+    "max_answer_length", 32,
     "The maximum length of an answer that can be generated. This is needed "
     "because the start and end predictions are not conditioned on one another.")
 
@@ -164,7 +164,7 @@ tf.flags.DEFINE_string(
 tf.flags.DEFINE_string("master", None, "[Optional] TensorFlow master URL.")
 
 flags.DEFINE_integer(
-    "num_tpu_cores", 8,
+    "num_tpu_cores", 1,
     "Only used if `use_tpu` is True. Total number of TPU cores to use.")
 
 
@@ -253,7 +253,7 @@ def main(_):
   train_examples = None
   num_train_steps = None
   num_warmup_steps = None
-  train_examples = squad_utils.read_squad_examples(input_file=FLAGS.train_file, is_training=True)
+  train_examples = quac_utils.read_quac_examples(input_file=FLAGS.train_file, is_training=True)
 
   if FLAGS.use_tpu:
       num_train_steps = int(len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
@@ -269,7 +269,7 @@ def main(_):
   rng = random.Random(6066)
   rng.shuffle(train_examples)
 
-  model_fn = squad_utils.v2_model_fn_builder(
+  model_fn = quac_utils.v2_model_fn_builder(
       albert_config=albert_config,
       init_checkpoint=FLAGS.init_checkpoint,
       learning_rate=FLAGS.learning_rate,
@@ -297,9 +297,9 @@ def main(_):
     # in memory.
 
     if not tf.gfile.Exists(FLAGS.train_feature_file):
-      train_writer = squad_utils.FeatureWriter(
+      train_writer = quac_utils.FeatureWriter(
           filename=os.path.join(FLAGS.train_feature_file), is_training=True)
-      squad_utils.convert_examples_to_features(
+      quac_utils.convert_examples_to_features(
           examples=train_examples,
           tokenizer=tokenizer,
           max_seq_length=FLAGS.max_seq_length,
@@ -317,7 +317,7 @@ def main(_):
     tf.logging.info("  Num steps = %d", num_train_steps)
     del train_examples
 
-    train_input_fn = squad_utils.input_fn_builder(
+    train_input_fn = quac_utils.input_fn_builder(
         input_file=FLAGS.train_feature_file,
         seq_length=FLAGS.max_seq_length,
         is_training=True,
@@ -330,7 +330,7 @@ def main(_):
   if FLAGS.do_predict:
     with tf.gfile.Open(FLAGS.predict_file) as predict_file:
       prediction_json = json.load(predict_file)["data"]
-    eval_examples = squad_utils.read_squad_examples(
+    eval_examples = quac_utils.read_quac_examples(
         input_file=FLAGS.predict_file, is_training=False)
 
     if (tf.gfile.Exists(FLAGS.predict_feature_file) and tf.gfile.Exists(
@@ -340,7 +340,7 @@ def main(_):
       with tf.gfile.Open(FLAGS.predict_feature_left_file, "rb") as fin:
         eval_features = pickle.load(fin)
     else:
-      eval_writer = squad_utils.FeatureWriter(
+      eval_writer = quac_utils.FeatureWriter(
           filename=FLAGS.predict_feature_file, is_training=False)
       eval_features = []
 
@@ -348,7 +348,7 @@ def main(_):
         eval_features.append(feature)
         eval_writer.process_feature(feature)
 
-      squad_utils.convert_examples_to_features(
+      quac_utils.convert_examples_to_features(
           examples=eval_examples,
           tokenizer=tokenizer,
           max_seq_length=FLAGS.max_seq_length,
@@ -367,7 +367,7 @@ def main(_):
     tf.logging.info("  Num split examples = %d", len(eval_features))
     tf.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
 
-    predict_input_fn = squad_utils.input_fn_builder(
+    predict_input_fn = quac_utils.input_fn_builder(
         input_file=FLAGS.predict_feature_file,
         seq_length=FLAGS.max_seq_length,
         is_training=False,
@@ -377,7 +377,7 @@ def main(_):
         is_v2=True)
 
     def get_result(checkpoint):
-      """Evaluate the checkpoint on SQuAD v2.0."""
+      """Evaluate the checkpoint on QuAC v0.2."""
       # If running eval on the TPU, you will need to specify the number of
       # steps.
       reader = tf.train.NewCheckpointReader(checkpoint)
@@ -398,7 +398,7 @@ def main(_):
 
         cls_logits = float(result["cls_logits"].flat[0])
         all_results.append(
-            squad_utils.RawResultV2(
+            quac_utils.RawResultV2(
                 unique_id=unique_id,
                 start_top_log_probs=start_top_log_probs,
                 start_top_index=start_top_index,
@@ -415,12 +415,12 @@ def main(_):
 
       result_dict = {}
       cls_dict = {}
-      squad_utils.accumulate_predictions_v2(
+      quac_utils.accumulate_predictions_v2(
           result_dict, cls_dict, eval_examples, eval_features,
           all_results, FLAGS.n_best_size, FLAGS.max_answer_length,
           FLAGS.start_n_top, FLAGS.end_n_top)
 
-      return squad_utils.evaluate_v2(
+      return quac_utils.evaluate_v2(
           result_dict, cls_dict, prediction_json, eval_examples,
           eval_features, all_results, FLAGS.n_best_size,
           FLAGS.max_answer_length, output_prediction_file, output_nbest_file,

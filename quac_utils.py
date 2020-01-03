@@ -264,7 +264,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
             example.question_text, lower=do_lower_case))
 
     if len(query_tokens) > max_query_length:
-      query_tokens = query_tokens[0:max_query_length]
+      query_tokens = query_tokens[-max_query_length:]
 
     paragraph_text = example.paragraph_text
     para_tokens = tokenization.encode_pieces(

@@ -266,7 +266,7 @@ def main(_):
 
   # Pre-shuffle the input to avoid having to make a very large shuffle
   # buffer in in the `input_fn`.
-  rng = random.Random(6066)
+  rng = random.Random(10000)
   rng.shuffle(train_examples)
 
   model_fn = quac_utils.v2_model_fn_builder(
@@ -277,6 +277,7 @@ def main(_):
       num_warmup_steps=num_warmup_steps,
       use_tpu=FLAGS.use_tpu,
       use_one_hot_embeddings=FLAGS.use_tpu,
+      additional_special_tokens=['<q>', '<a>'],
       max_seq_length=FLAGS.max_seq_length,
       start_n_top=FLAGS.start_n_top,
       end_n_top=FLAGS.end_n_top,

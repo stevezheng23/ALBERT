@@ -259,7 +259,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
           example_index, len(examples), cnt_pos, cnt_neg))
 
     query_tokens = []
-    qa_texts = example.question_text.split('<s>')
+    qa_texts = example.question_text.split('<q>')
     for qa_text in qa_texts:
       qa_text = qa_text.strip()
       if not qa_text:

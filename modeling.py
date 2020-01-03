@@ -157,6 +157,7 @@ class AlbertModel(object):
                input_mask=None,
                token_type_ids=None,
                use_one_hot_embeddings=False,
+               additional_special_tokens=None,
                scope=None):
     """Constructor for AlbertModel.
 
@@ -200,7 +201,8 @@ class AlbertModel(object):
             embedding_size=config.embedding_size,
             initializer_range=config.initializer_range,
             word_embedding_name="word_embeddings",
-            use_one_hot_embeddings=use_one_hot_embeddings)
+            use_one_hot_embeddings=use_one_hot_embeddings,
+            additional_special_tokens=additional_special_tokens)
 
         # Add positional embeddings and token type embeddings, then layer
         # normalize and perform dropout.
@@ -479,7 +481,8 @@ def embedding_lookup(input_ids,
                      embedding_size=128,
                      initializer_range=0.02,
                      word_embedding_name="word_embeddings",
-                     use_one_hot_embeddings=False):
+                     use_one_hot_embeddings=False,
+                     additional_special_tokens=None):
   """Looks up words embeddings for id tensor.
 
   Args:
@@ -507,6 +510,15 @@ def embedding_lookup(input_ids,
       name=word_embedding_name,
       shape=[vocab_size, embedding_size],
       initializer=create_initializer(initializer_range))
+
+  if additional_special_tokens and len(additional_special_tokens) > 0:
+      additional_vocab_size = len(additional_special_tokens)
+      additional_embedding_table = tf.get_variable(
+          name="{0}_additional".format(word_embedding_name),
+          shape=[additional_vocab_size, embedding_size],
+          initializer=create_initializer(initializer_range))
+      embedding_table = tf.concat([embedding_table, additional_embedding_table], axis=0)
+      vocab_size += additional_vocab_size
 
   if use_one_hot_embeddings:
     flat_input_ids = tf.reshape(input_ids, [-1])

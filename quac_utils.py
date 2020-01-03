@@ -258,10 +258,31 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
       tf.logging.info("Converting {}/{} pos {} neg {}".format(
           example_index, len(examples), cnt_pos, cnt_neg))
 
-    query_tokens = tokenization.encode_ids(
-        tokenizer.sp_model,
-        tokenization.preprocess_text(
-            example.question_text, lower=do_lower_case))
+    query_tokens = []
+    qa_texts = example.question_text.split('<s>')
+    for qa_text in qa_texts:
+      qa_text = qa_text.strip()
+      if not qa_text:
+        continue
+
+      query_tokens.append('<q>')
+
+      qa_items = qa_text.split('<a>')
+      if len(qa_items) < 1:
+        continue
+
+      q_text = tokenization.preprocess_text(qa_items[0], lower=do_lower_case).strip()
+      q_tokens = tokenization.encode_ids(tokenizer.sp_model, q_text)
+      query_tokens.extend(q_tokens)
+
+      if len(qa_items) < 2:
+        continue
+
+      query_tokens.append('<a>')
+
+      a_text = tokenization.preprocess_text(qa_items[1], lower=do_lower_case).strip()
+      a_tokens = tokenization.encode_ids(tokenizer.sp_model, a_text)
+      query_tokens.extend(a_tokens)
 
     if len(query_tokens) > max_query_length:
       query_tokens = query_tokens[-max_query_length:]

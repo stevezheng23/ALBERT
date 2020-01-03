@@ -137,38 +137,68 @@ def read_quac_examples(input_file, is_training):
   with tf.gfile.Open(input_file, "r") as reader:
     input_data = json.load(reader)["data"]
 
+  def get_question_text(history,
+                        qas):
+    question_tokens = ['<q>'] + qas["question"].split(' ')
+    return " ".join(history + [" ".join(question_tokens)])
+
+  def get_question_history(history,
+                           qas,
+                           num_turn):
+    question_tokens = []
+    question_tokens.extend(['<q>'] + qas["question"].split(' '))
+    question_tokens.extend(['<a>'] + qas["orig_answer"]["text"].split(' '))
+
+    question_text = " ".join(question_tokens)
+    if question_text:
+      history.append(question_text)
+
+    if num_turn >= 0 and len(history) > num_turn:
+      history = history[-num_turn:]
+
+    return history
+
+  def get_answer_span(context,
+                      qas,
+                      no_answer):
+    orig_text = qas["orig_answer"]["text"].lower()
+    answer_start = qas["orig_answer"]["answer_start"]
+
+    if no_answer or not orig_text or answer_start < 0:
+      return "", -1, -1
+
+    answer_end = answer_start + len(orig_text) - 1
+    answer_text = context[answer_start:answer_end + 1].lower()
+
+    assert orig_text == answer_text
+    answer_text = context[answer_start:answer_end + 1]
+
+    return answer_text, answer_start, answer_end
+
   examples = []
   for entry in input_data:
     for paragraph in entry["paragraphs"]:
       paragraph_text = paragraph["context"]
+      if paragraph_text.endswith("CANNOTANSWER"):
+        paragraph_text = paragraph_text[:-len("CANNOTANSWER")].rstrip()
 
-      for qa in paragraph["qas"]:
-        qas_id = qa["id"]
-        question_text = qa["question"]
-        start_position = None
-        orig_answer_text = None
-        is_impossible = False
+      question_history = []
+      for qas in paragraph["qas"]:
+        qas_id = qas["id"]
 
-        if is_training:
-          is_impossible = qa.get("is_impossible", False)
-          if (len(qa["answers"]) != 1) and (not is_impossible):
-            raise ValueError(
-                "For training, each question should have exactly 1 answer.")
-          if not is_impossible:
-            answer = qa["answers"][0]
-            orig_answer_text = answer["text"]
-            start_position = answer["answer_start"]
-          else:
-            start_position = -1
-            orig_answer_text = ""
+        question_text = get_question_text(question_history, qas)
+        question_history = get_question_history(question_history, qas, -1)
+
+        is_impossible = (qas["orig_answer"]["text"] == "CANNOTANSWER")
+        orig_answer_text, start_position, _ = get_answer_span(paragraph_text, qas, is_impossible)
 
         example = QuacExample(
-            qas_id=qas_id,
-            question_text=question_text,
-            paragraph_text=paragraph_text,
-            orig_answer_text=orig_answer_text,
-            start_position=start_position,
-            is_impossible=is_impossible)
+          qas_id=qas_id,
+          question_text=question_text,
+          paragraph_text=paragraph_text,
+          orig_answer_text=orig_answer_text,
+          start_position=start_position,
+          is_impossible=is_impossible)
         examples.append(example)
 
   return examples

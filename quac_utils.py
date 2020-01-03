@@ -265,7 +265,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
       if not qa_text:
         continue
 
-      query_tokens.append('<q>')
+      query_tokens.append(tokenizer.sp_model.PieceToId('<q>'))
 
       qa_items = qa_text.split('<a>')
       if len(qa_items) < 1:
@@ -278,7 +278,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
       if len(qa_items) < 2:
         continue
 
-      query_tokens.append('<a>')
+      query_tokens.append(tokenizer.sp_model.PieceToId('<a>'))
 
       a_text = tokenization.preprocess_text(qa_items[1], lower=do_lower_case).strip()
       a_tokens = tokenization.encode_ids(tokenizer.sp_model, a_text)

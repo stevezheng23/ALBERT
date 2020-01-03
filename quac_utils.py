@@ -1416,8 +1416,8 @@ def write_predictions_v2(result_dict, cls_dict, all_examples, all_features,
 
 
 def create_v2_model(albert_config, is_training, input_ids, input_mask,
-                    segment_ids, use_one_hot_embeddings, features,
-                    max_seq_length, start_n_top, end_n_top, dropout_prob):
+                    segment_ids, use_one_hot_embeddings, additional_special_tokens,
+                    features, max_seq_length, start_n_top, end_n_top, dropout_prob):
   """Creates a classification model."""
   model = modeling.AlbertModel(
       config=albert_config,
@@ -1425,7 +1425,8 @@ def create_v2_model(albert_config, is_training, input_ids, input_mask,
       input_ids=input_ids,
       input_mask=input_mask,
       token_type_ids=segment_ids,
-      use_one_hot_embeddings=use_one_hot_embeddings)
+      use_one_hot_embeddings=use_one_hot_embeddings,
+      additional_special_tokens=additional_special_tokens)
 
   output = model.get_sequence_output()
   bsz = tf.shape(output)[0]
@@ -1565,8 +1566,8 @@ def create_v2_model(albert_config, is_training, input_ids, input_mask,
 
 def v2_model_fn_builder(albert_config, init_checkpoint, learning_rate,
                         num_train_steps, num_warmup_steps, use_tpu,
-                        use_one_hot_embeddings, max_seq_length, start_n_top,
-                        end_n_top, dropout_prob):
+                        use_one_hot_embeddings, additional_special_tokens,
+                        max_seq_length, start_n_top, end_n_top, dropout_prob):
   """Returns `model_fn` closure for TPUEstimator."""
 
   def model_fn(features, labels, mode, params):  # pylint: disable=unused-argument
@@ -1590,6 +1591,7 @@ def v2_model_fn_builder(albert_config, init_checkpoint, learning_rate,
         input_mask=input_mask,
         segment_ids=segment_ids,
         use_one_hot_embeddings=use_one_hot_embeddings,
+        additional_special_tokens=additional_special_tokens,
         features=features,
         max_seq_length=max_seq_length,
         start_n_top=start_n_top,

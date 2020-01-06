@@ -1438,7 +1438,7 @@ def write_predictions_v2(result_dict, cls_dict, all_examples, all_features,
 def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
                 eval_features, all_results, n_best_size, max_answer_length,
                 output_prediction_file, output_nbest_file,
-                output_null_log_odds_file, output_eval_result_file):
+                output_null_log_odds_file):
   predictions, na_probs = write_predictions_v2(
       result_dict, cls_dict, eval_examples, eval_features,
       all_results, n_best_size, max_answer_length,
@@ -1484,9 +1484,7 @@ def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
   threshold_metric_items = sorted(threshold_metric.items(), key=lambda x: x[1]["f1"] + x[1]["HEQ"], reverse=True)
   best_null_score_threshold, best_metric_json = threshold_metric_items[0]
   best_metric_json["null_score_threshold"] = best_null_score_threshold
-
-  with open(output_eval_result_file, 'w') as fout:
-    json.dump(best_metric_json, fout)
+  return best_metric_json
 
 
 def get_assignment_map_from_checkpoint(tvars, init_checkpoint):

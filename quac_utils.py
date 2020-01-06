@@ -1468,7 +1468,8 @@ def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
     })
 
   threshold_metric = {}
-  for null_score_threshold in range(0.1, 1.0, 0.1):
+  for null_score_threshold in range(1, 10):
+    null_score_threshold /= 0.1
     preds = collections.defaultdict(dict)
     for id in data_lookup.keys():
       if id not in preds:

@@ -1477,7 +1477,7 @@ def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
 
       data_list = sorted(data_lookup[id], key=lambda x: x["turn_id"])
       for data in data_list:
-        preds[id][data["qas_id"]] = data["answer_text"] if data["answer_text"] < null_score_threshold else "CANNOTANSWER", "x", "m"
+        preds[id][data["qas_id"]] = data["answer_text"] if data["null_score"] < null_score_threshold else "CANNOTANSWER", "x", "m"
 
     metric_json = eval_fn(prediction_json, preds, False, 0.4)
     threshold_metric[null_score_threshold] = metric_json

@@ -1022,15 +1022,7 @@ def v2_model_fn_builder(albert_config, init_checkpoint, learning_rate,
 
 
 ####### following are from official QuAC v0.2 evaluation scripts
-def make_qid_to_has_ans(dataset):
-  qid_to_has_ans = {}
-  for article in dataset:
-    for p in article['paragraphs']:
-      for qa in p['qas']:
-        qid_to_has_ans[qa['id']] = bool(qa['answers'])
-  return qid_to_has_ans
-
-def normalize_answer_v2(s):
+def normalize_answer(s):
   """Lower text and remove punctuation, articles and extra whitespace."""
   def remove_articles(text):
     regex = re.compile(r'\b(a|an|the)\b', re.UNICODE)
@@ -1044,107 +1036,204 @@ def normalize_answer_v2(s):
     return text.lower()
   return white_space_fix(remove_articles(remove_punc(lower(s))))
 
-def get_tokens(s):
-  if not s: return []
-  return normalize_answer_v2(s).split()
+def is_overlapping(x1, x2, y1, y2):
+  return max(x1, y1) <= min(x2, y2)
 
-def compute_exact(a_gold, a_pred):
-  return int(normalize_answer_v2(a_gold) == normalize_answer_v2(a_pred))
-
-def compute_f1(a_gold, a_pred):
-  gold_toks = get_tokens(a_gold)
-  pred_toks = get_tokens(a_pred)
-  common = collections.Counter(gold_toks) & collections.Counter(pred_toks)
+def f1_score(prediction, ground_truth):
+  prediction_tokens = normalize_answer(prediction).split()
+  ground_truth_tokens = normalize_answer(ground_truth).split()
+  common = collections.Counter(prediction_tokens) & collections.Counter(ground_truth_tokens)
   num_same = sum(common.values())
-  if len(gold_toks) == 0 or len(pred_toks) == 0:
-    # If either is no-answer, then F1 is 1 if they agree, 0 otherwise
-    return int(gold_toks == pred_toks)
   if num_same == 0:
     return 0
-  precision = 1.0 * num_same / len(pred_toks)
-  recall = 1.0 * num_same / len(gold_toks)
+  precision = 1.0 * num_same / len(prediction_tokens)
+  recall = 1.0 * num_same / len(ground_truth_tokens)
   f1 = (2 * precision * recall) / (precision + recall)
   return f1
 
-def get_raw_scores(dataset, preds):
-  exact_scores = {}
-  f1_scores = {}
-  for article in dataset:
-    for p in article['paragraphs']:
-      for qa in p['qas']:
-        qid = qa['id']
-        gold_answers = [a['text'] for a in qa['answers']
-                        if normalize_answer_v2(a['text'])]
-        if not gold_answers:
-          # For unanswerable questions, only correct answer is empty string
-          gold_answers = ['']
-        if qid not in preds:
-          print('Missing prediction for %s' % qid)
-          continue
-        a_pred = preds[qid]
-        # Take max over all gold answers
-        exact_scores[qid] = max(compute_exact(a, a_pred) for a in gold_answers)
-        f1_scores[qid] = max(compute_f1(a, a_pred) for a in gold_answers)
-  return exact_scores, f1_scores
+def exact_match_score(prediction, ground_truth):
+  return (normalize_answer(prediction) == normalize_answer(ground_truth))
 
-def apply_no_ans_threshold(scores, na_probs, qid_to_has_ans, na_prob_thresh):
-  new_scores = {}
-  for qid, s in scores.items():
-    pred_na = na_probs[qid] > na_prob_thresh
-    if pred_na:
-      new_scores[qid] = float(not qid_to_has_ans[qid])
+def display_counter(title, c, c2=None):
+  print(title)
+  for key, _ in c.most_common():
+    if c2:
+      print('%s: %d / %d, %.1f%%, F1: %.1f' % (
+        key, c[key], sum(c.values()), c[key] * 100. / sum(c.values()), sum(c2[key]) * 100. / len(c2[key])))
     else:
-      new_scores[qid] = s
-  return new_scores
+      print('%s: %d / %d, %.1f%%' % (key, c[key], sum(c.values()), c[key] * 100. / sum(c.values())))
 
-def make_eval_dict(exact_scores, f1_scores, qid_list=None):
-  if not qid_list:
-    total = len(exact_scores)
-    return collections.OrderedDict([
-        ('exact', 100.0 * sum(exact_scores.values()) / total),
-        ('f1', 100.0 * sum(f1_scores.values()) / total),
-        ('total', total),
-    ])
+def leave_one_out_max(prediction, ground_truths, article):
+  if len(ground_truths) == 1:
+    return metric_max_over_ground_truths(prediction, ground_truths, article)[1]
   else:
-    total = len(qid_list)
-    return collections.OrderedDict([
-        ('exact', 100.0 * sum(exact_scores[k] for k in qid_list) / total),
-        ('f1', 100.0 * sum(f1_scores[k] for k in qid_list) / total),
-        ('total', total),
-    ])
+    t_f1 = []
+    # leave out one ref every time
+    for i in range(len(ground_truths)):
+      idxes = list(range(len(ground_truths)))
+      idxes.pop(i)
+      refs = [ground_truths[z] for z in idxes]
+      t_f1.append(metric_max_over_ground_truths(prediction, refs, article)[1])
+  return 1.0 * sum(t_f1) / len(t_f1)
 
-def find_best_thresh(preds, scores, na_probs, qid_to_has_ans):
-  num_no_ans = sum(1 for k in qid_to_has_ans if not qid_to_has_ans[k])
-  cur_score = num_no_ans
-  best_score = cur_score
-  best_thresh = 0.0
-  qid_list = sorted(na_probs, key=lambda k: na_probs[k])
-  for i, qid in enumerate(qid_list):
-    if qid not in scores: continue
-    if qid_to_has_ans[qid]:
-      diff = scores[qid]
+def metric_max_over_ground_truths(prediction, ground_truths, article):
+  scores_for_ground_truths = []
+  for ground_truth in ground_truths:
+    score = compute_span_overlap(prediction, ground_truth, article)
+    scores_for_ground_truths.append(score)
+  return max(scores_for_ground_truths, key=lambda x: x[1])
+
+def handle_cannot(refs):
+  num_cannot = 0
+  num_spans = 0
+  for ref in refs:
+    if ref == 'CANNOTANSWER':
+      num_cannot += 1
     else:
-      if preds[qid]:
-        diff = -1
-      else:
-        diff = 0
-    cur_score += diff
-    if cur_score > best_score:
-      best_score = cur_score
-      best_thresh = na_probs[qid]
-  return 100.0 * best_score / len(scores), best_thresh
+      num_spans += 1
+  if num_cannot >= num_spans:
+    refs = ['CANNOTANSWER']
+  else:
+    refs = [x for x in refs if x != 'CANNOTANSWER']
+  return refs
 
-def find_all_best_thresh(main_eval, preds, exact_raw, f1_raw, na_probs, qid_to_has_ans):
-  best_exact, exact_thresh = find_best_thresh(preds, exact_raw, na_probs, qid_to_has_ans)
-  best_f1, f1_thresh = find_best_thresh(preds, f1_raw, na_probs, qid_to_has_ans)
-  main_eval['best_exact'] = best_exact
-  main_eval['best_exact_thresh'] = exact_thresh
-  main_eval['best_f1'] = best_f1
-  main_eval['best_f1_thresh'] = f1_thresh
+def leave_one_out(refs):
+  if len(refs) == 1:
+    return 1.
+  splits = []
+  for r in refs:
+    splits.append(r.split())
+  t_f1 = 0.0
+  for i in range(len(refs)):
+    m_f1 = 0
+    for j in range(len(refs)):
+      if i == j:
+        continue
+      f1_ij = f1_score(refs[i], refs[j])
+      if f1_ij > m_f1:
+        m_f1 = f1_ij
+    t_f1 += m_f1
+  return t_f1 / len(refs)
 
-def merge_eval(main_eval, new_eval, prefix):
-  for k in new_eval:
-    main_eval['%s_%s' % (prefix, k)] = new_eval[k]
+def compute_span_overlap(pred_span, gt_span, text):
+  if gt_span == 'CANNOTANSWER':
+    if pred_span == 'CANNOTANSWER':
+      return 'Exact match', 1.0
+    return 'No overlap', 0.
+  fscore = f1_score(pred_span, gt_span)
+  pred_start = text.find(pred_span)
+  gt_start = text.find(gt_span)
+
+  if pred_start == -1 or gt_start == -1:
+    return 'Span indexing error', fscore
+
+  pred_end = pred_start + len(pred_span)
+  gt_end = gt_start + len(gt_span)
+
+  fscore = f1_score(pred_span, gt_span)
+  overlap = is_overlapping(pred_start, pred_end, gt_start, gt_end)
+
+  if exact_match_score(pred_span, gt_span):
+    return 'Exact match', fscore
+  if overlap:
+    return 'Partial overlap', fscore
+  else:
+    return 'No overlap', fscore
+
+def eval_fn(val_results, model_results, verbose, min_f1):
+  span_overlap_stats = collections.Counter()
+  sentence_overlap = 0.
+  para_overlap = 0.
+  total_qs = 0.
+  f1_stats = collections.efaultdict(list)
+  unfiltered_f1s = []
+  human_f1 = []
+  HEQ = 0.
+  DHEQ = 0.
+  total_dials = 0.
+  yes_nos = []
+  followups = []
+  unanswerables = []
+  for p in val_results:
+    for par in p['paragraphs']:
+      did = par['id']
+      qa_list = par['qas']
+      good_dial = 1.
+      for qa in qa_list:
+        q_idx = qa['id']
+        val_spans = [anss['text'] for anss in qa['answers']]
+        val_spans = handle_cannot(val_spans)
+        hf1 = leave_one_out(val_spans)
+
+        if did not in model_results or q_idx not in model_results[did]:
+          print(did, q_idx, 'no prediction for this dialogue id')
+          good_dial = 0
+          f1_stats['NO ANSWER'].append(0.0)
+          yes_nos.append(False)
+          followups.append(False)
+          if val_spans == ['CANNOTANSWER']:
+            unanswerables.append(0.0)
+          total_qs += 1
+          unfiltered_f1s.append(0.0)
+          if hf1 >= min_f1:
+            human_f1.append(hf1)
+          continue
+
+        pred_span, pred_yesno, pred_followup = model_results[did][q_idx]
+
+        max_overlap, _ = metric_max_over_ground_truths( \
+          pred_span, val_spans, par['context'])
+        max_f1 = leave_one_out_max( \
+          pred_span, val_spans, par['context'])
+        unfiltered_f1s.append(max_f1)
+
+        # dont eval on low agreement instances
+        if hf1 < min_f1:
+          continue
+
+        human_f1.append(hf1)
+        yes_nos.append(pred_yesno == qa['yesno'])
+        followups.append(pred_followup == qa['followup'])
+        if val_spans == ['CANNOTANSWER']:
+          unanswerables.append(max_f1)
+        if verbose:
+          print("-" * 20)
+          print(pred_span)
+          print(val_spans)
+          print(max_f1)
+          print("-" * 20)
+        if max_f1 >= hf1:
+          HEQ += 1.
+        else:
+          good_dial = 0.
+        span_overlap_stats[max_overlap] += 1
+        f1_stats[max_overlap].append(max_f1)
+        total_qs += 1.
+      DHEQ += good_dial
+      total_dials += 1
+  DHEQ_score = 100.0 * DHEQ / total_dials
+  HEQ_score = 100.0 * HEQ / total_qs
+  all_f1s = sum(f1_stats.values(), [])
+  overall_f1 = 100.0 * sum(all_f1s) / len(all_f1s)
+  unfiltered_f1 = 100.0 * sum(unfiltered_f1s) / len(unfiltered_f1s)
+  yesno_score = (100.0 * sum(yes_nos) / len(yes_nos))
+  followup_score = (100.0 * sum(followups) / len(followups))
+  unanswerable_score = (100.0 * sum(unanswerables) / len(unanswerables))
+  metric_json = {"unfiltered_f1": unfiltered_f1, "f1": overall_f1, "HEQ": HEQ_score, "DHEQ": DHEQ_score, "yes/no": yesno_score, "followup": followup_score, "unanswerable_acc": unanswerable_score}
+  if verbose:
+    print("=======================")
+    display_counter('Overlap Stats', span_overlap_stats, f1_stats)
+  print("=======================")
+  print('Overall F1: %.1f' % overall_f1)
+  print('Yes/No Accuracy : %.1f' % yesno_score)
+  print('Followup Accuracy : %.1f' % followup_score)
+  print('Unfiltered F1 ({0:d} questions): {1:.1f}'.format(len(unfiltered_f1s), unfiltered_f1))
+  print('Accuracy On Unanswerable Questions: {0:.1f} %% ({1:d} questions)'.format(unanswerable_score, len(unanswerables)))
+  print('Human F1: %.1f' % (100.0 * sum(human_f1) / len(human_f1)))
+  print('Model F1 >= Human F1 (Questions): %d / %d, %.1f%%' % (HEQ, total_qs, 100.0 * HEQ / total_qs))
+  print('Model F1 >= Human F1 (Dialogs): %d / %d, %.1f%%' % (DHEQ, total_dials, 100.0 * DHEQ / total_dials))
+  print("=======================")
+  return metric_json
 ####### above are from official QuAC v0.2  evaluation scripts
 
 
@@ -1335,19 +1424,38 @@ def write_predictions_v2(result_dict, cls_dict, all_examples, all_features,
     all_nbest_json[example.qas_id] = nbest_json
     assert len(nbest_json) >= 1
 
+  with tf.gfile.GFile(output_prediction_file, "w") as writer:
+    writer.write(json.dumps(all_predictions, indent=4) + "\n")
+
   with tf.gfile.GFile(output_nbest_file, "w") as writer:
     writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
 
   with tf.gfile.GFile(output_null_log_odds_file, "w") as writer:
     writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
+  return all_predictions, scores_diff_json
+
+
+def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
+                eval_features, all_results, n_best_size, max_answer_length,
+                output_prediction_file, output_nbest_file,
+                output_null_log_odds_file, output_eval_result_file):
+  predictions, na_probs = write_predictions_v2(
+      result_dict, cls_dict, eval_examples, eval_features,
+      all_results, n_best_size, max_answer_length,
+      output_prediction_file, output_nbest_file,
+      output_null_log_odds_file, None)
 
   data_lookup = {}
-  for qas_id in all_predictions.keys():
-    id_items = qas_id.split('#')
+  for qas_id in predictions.keys():
+    if qas_id not in na_probs:
+      continue
+
+    id_items = qas_id.split('_q#')
     id = id_items[0]
     turn_id = int(id_items[1])
 
-    answer_text = all_predictions[qas_id]
+    answer_text = predictions[qas_id]
+    null_score = na_probs[qas_id]
 
     if id not in data_lookup:
       data_lookup[id] = []
@@ -1356,67 +1464,29 @@ def write_predictions_v2(result_dict, cls_dict, all_examples, all_features,
       "qas_id": qas_id,
       "turn_id": turn_id,
       "answer_text": answer_text,
-      "yes_no": "x",
-      "follow_up": "m"
+      "null_score": null_score
     })
 
-  with open(output_prediction_file, "w") as file:
+  threshold_metric = {}
+  for null_score_threshold in range(0.1, 1.0, 0.1):
+    preds = collections.defaultdict(dict)
     for id in data_lookup.keys():
+      if id not in preds:
+        preds[id] = {}
+
       data_list = sorted(data_lookup[id], key=lambda x: x["turn_id"])
+      for data in data_list:
+        preds[id][data["qas_id"]] = data["answer_text"] if data["answer_text"] < null_score_threshold else "CANNOTANSWER", "x", "m"
 
-      output_data = json.dumps({
-        "best_span_str": [data["answer_text"] for data in data_list],
-        "qid": [data["qas_id"] for data in data_list],
-        "yesno": [data["yes_no"] for data in data_list],
-        "followup": [data["follow_up"] for data in data_list]
-      })
+    metric_json = eval_fn(prediction_json, preds, False, 0.4)
+    threshold_metric[null_score_threshold] = metric_json
 
-      file.write("{0}\n".format(output_data))
+  threshold_metric_items = sorted(threshold_metric.items(), key=lambda x: x[1]["f1"] + x[1]["HEQ"], reverse=True)
+  best_null_score_threshold, best_metric_json = threshold_metric_items[0]
+  best_metric_json["null_score_threshold"] = best_null_score_threshold
 
-  return all_predictions, scores_diff_json
-
-
-def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
-                eval_features, all_results, n_best_size, max_answer_length,
-                output_prediction_file, output_nbest_file,
-                output_null_log_odds_file):
-  null_score_diff_threshold = None
-  predictions, na_probs = write_predictions_v2(
-      result_dict, cls_dict, eval_examples, eval_features,
-      all_results, n_best_size, max_answer_length,
-      output_prediction_file, output_nbest_file,
-      output_null_log_odds_file, null_score_diff_threshold)
-
-  na_prob_thresh = 1.0  # default value taken from the eval script
-  qid_to_has_ans = make_qid_to_has_ans(prediction_json)  # maps qid to True/False
-  has_ans_qids = [k for k, v in qid_to_has_ans.items() if v]
-  no_ans_qids = [k for k, v in qid_to_has_ans.items() if not v]
-  exact_raw, f1_raw = get_raw_scores(prediction_json, predictions)
-  exact_thresh = apply_no_ans_threshold(exact_raw, na_probs, qid_to_has_ans,
-                                        na_prob_thresh)
-  f1_thresh = apply_no_ans_threshold(f1_raw, na_probs, qid_to_has_ans,
-                                     na_prob_thresh)
-  out_eval = make_eval_dict(exact_thresh, f1_thresh)
-  find_all_best_thresh(out_eval, predictions, exact_raw, f1_raw, na_probs, qid_to_has_ans)
-  null_score_diff_threshold = out_eval["best_f1_thresh"]
-
-  predictions, na_probs = write_predictions_v2(
-      result_dict, cls_dict,eval_examples, eval_features,
-      all_results, n_best_size, max_answer_length,
-      output_prediction_file, output_nbest_file,
-      output_null_log_odds_file, null_score_diff_threshold)
-
-  qid_to_has_ans = make_qid_to_has_ans(prediction_json)  # maps qid to True/False
-  has_ans_qids = [k for k, v in qid_to_has_ans.items() if v]
-  no_ans_qids = [k for k, v in qid_to_has_ans.items() if not v]
-  exact_raw, f1_raw = get_raw_scores(prediction_json, predictions)
-  exact_thresh = apply_no_ans_threshold(exact_raw, na_probs, qid_to_has_ans,
-                                        na_prob_thresh)
-  f1_thresh = apply_no_ans_threshold(f1_raw, na_probs, qid_to_has_ans,
-                                     na_prob_thresh)
-  out_eval = make_eval_dict(exact_thresh, f1_thresh)
-  out_eval["null_score_diff_threshold"] = null_score_diff_threshold
-  return out_eval
+  with open(output_eval_result_file, 'w') as fout:
+    json.dump(best_metric_json, fout)
 
 
 def get_assignment_map_from_checkpoint(tvars, init_checkpoint):

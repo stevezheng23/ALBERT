@@ -757,715 +757,6 @@ def input_fn_builder(input_file, seq_length, is_training,
   return input_fn
 
 
-def create_v1_model(albert_config, is_training, input_ids, input_mask,
-                    segment_ids, use_one_hot_embeddings):
-  """Creates a classification model."""
-  model = modeling.AlbertModel(
-      config=albert_config,
-      is_training=is_training,
-      input_ids=input_ids,
-      input_mask=input_mask,
-      token_type_ids=segment_ids,
-      use_one_hot_embeddings=use_one_hot_embeddings)
-
-  final_hidden = model.get_sequence_output()
-
-  final_hidden_shape = modeling.get_shape_list(final_hidden, expected_rank=3)
-  batch_size = final_hidden_shape[0]
-  seq_length = final_hidden_shape[1]
-  hidden_size = final_hidden_shape[2]
-
-  output_weights = tf.get_variable(
-      "cls/quac/output_weights", [2, hidden_size],
-      initializer=tf.truncated_normal_initializer(stddev=0.02))
-
-  output_bias = tf.get_variable(
-      "cls/quac/output_bias", [2], initializer=tf.zeros_initializer())
-
-  final_hidden_matrix = tf.reshape(final_hidden,
-                                   [batch_size * seq_length, hidden_size])
-  logits = tf.matmul(final_hidden_matrix, output_weights, transpose_b=True)
-  logits = tf.nn.bias_add(logits, output_bias)
-
-  logits = tf.reshape(logits, [batch_size, seq_length, 2])
-  logits = tf.transpose(logits, [2, 0, 1])
-
-  unstacked_logits = tf.unstack(logits, axis=0)
-
-  (start_logits, end_logits) = (unstacked_logits[0], unstacked_logits[1])
-
-  return (start_logits, end_logits)
-
-
-def v1_model_fn_builder(albert_config, init_checkpoint, learning_rate,
-                        num_train_steps, num_warmup_steps, use_tpu,
-                        use_one_hot_embeddings):
-  """Returns `model_fn` closure for TPUEstimator."""
-
-  def model_fn(features, labels, mode, params):  # pylint: disable=unused-argument
-    """The `model_fn` for TPUEstimator."""
-
-    tf.logging.info("*** Features ***")
-    for name in sorted(features.keys()):
-      tf.logging.info("  name = %s, shape = %s" % (name, features[name].shape))
-
-    unique_ids = features["unique_ids"]
-    input_ids = features["input_ids"]
-    input_mask = features["input_mask"]
-    segment_ids = features["segment_ids"]
-
-    is_training = (mode == tf.estimator.ModeKeys.TRAIN)
-
-    (start_logits, end_logits) = create_v1_model(
-        albert_config=albert_config,
-        is_training=is_training,
-        input_ids=input_ids,
-        input_mask=input_mask,
-        segment_ids=segment_ids,
-        use_one_hot_embeddings=use_one_hot_embeddings)
-
-    tvars = tf.trainable_variables()
-
-    initialized_variable_names = {}
-    scaffold_fn = None
-    if init_checkpoint:
-      (assignment_map, initialized_variable_names
-      ) = get_assignment_map_from_checkpoint(tvars, init_checkpoint)
-      if use_tpu:
-
-        def tpu_scaffold():
-          tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
-          return tf.train.Scaffold()
-
-        scaffold_fn = tpu_scaffold
-      else:
-        tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
-
-    tf.logging.info("**** Trainable Variables ****")
-    for var in tvars:
-      init_string = ""
-      if var.name in initialized_variable_names:
-        init_string = ", *INIT_FROM_CKPT*"
-      tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
-                      init_string)
-
-    output_spec = None
-    if mode == tf.estimator.ModeKeys.TRAIN:
-      seq_length = modeling.get_shape_list(input_ids)[1]
-
-      def compute_loss(logits, positions):
-        one_hot_positions = tf.one_hot(
-            positions, depth=seq_length, dtype=tf.float32)
-        log_probs = tf.nn.log_softmax(logits, axis=-1)
-        loss = -tf.reduce_mean(
-            tf.reduce_sum(one_hot_positions * log_probs, axis=-1))
-        return loss
-
-      start_positions = features["start_positions"]
-      end_positions = features["end_positions"]
-
-      start_loss = compute_loss(start_logits, start_positions)
-      end_loss = compute_loss(end_logits, end_positions)
-
-      total_loss = (start_loss + end_loss) / 2.0
-
-      train_op = optimization.create_optimizer(
-          total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
-
-      output_spec = contrib_tpu.TPUEstimatorSpec(
-          mode=mode,
-          loss=total_loss,
-          train_op=train_op,
-          scaffold_fn=scaffold_fn)
-    elif mode == tf.estimator.ModeKeys.PREDICT:
-      predictions = {
-          "unique_ids": unique_ids,
-          "start_log_prob": start_logits,
-          "end_log_prob": end_logits,
-      }
-      output_spec = contrib_tpu.TPUEstimatorSpec(
-          mode=mode, predictions=predictions, scaffold_fn=scaffold_fn)
-    else:
-      raise ValueError(
-          "Only TRAIN and PREDICT modes are supported: %s" % (mode))
-    return output_spec
-
-  return model_fn
-
-
-def accumulate_predictions_v1(result_dict, all_examples, all_features,
-                              all_results, n_best_size, max_answer_length):
-  """accumulate predictions for each positions in a dictionary."""
-  example_index_to_features = collections.defaultdict(list)
-  for feature in all_features:
-    example_index_to_features[feature.example_index].append(feature)
-
-  unique_id_to_result = {}
-  for result in all_results:
-    unique_id_to_result[result.unique_id] = result
-
-  all_predictions = collections.OrderedDict()
-  all_nbest_json = collections.OrderedDict()
-  scores_diff_json = collections.OrderedDict()
-
-  for (example_index, example) in enumerate(all_examples):
-    if example_index not in result_dict:
-      result_dict[example_index] = {}
-    features = example_index_to_features[example_index]
-
-    prelim_predictions = []
-    min_null_feature_index = 0  # the paragraph slice with min mull score
-    null_start_logit = 0  # the start logit at the slice with min null score
-    null_end_logit = 0  # the end logit at the slice with min null score
-    for (feature_index, feature) in enumerate(features):
-      if feature.unique_id not in result_dict[example_index]:
-        result_dict[example_index][feature.unique_id] = {}
-      result = unique_id_to_result[feature.unique_id]
-      start_indexes = _get_best_indexes(result.start_log_prob, n_best_size)
-      end_indexes = _get_best_indexes(result.end_log_prob, n_best_size)
-      for start_index in start_indexes:
-        for end_index in end_indexes:
-          doc_offset = feature.tokens.index("[SEP]") + 1
-          # We could hypothetically create invalid predictions, e.g., predict
-          # that the start of the span is in the question. We throw out all
-          # invalid predictions.
-          if start_index - doc_offset >= len(feature.tok_start_to_orig_index):
-            continue
-          if end_index - doc_offset >= len(feature.tok_end_to_orig_index):
-            continue
-          if not feature.token_is_max_context.get(start_index, False):
-            continue
-          if end_index < start_index:
-            continue
-          length = end_index - start_index + 1
-          if length > max_answer_length:
-            continue
-          start_log_prob = result.start_log_prob[start_index]
-          end_log_prob = result.end_log_prob[end_index]
-          start_idx = start_index - doc_offset
-          end_idx = end_index - doc_offset
-          if (start_idx, end_idx) not in result_dict[example_index][feature.unique_id]:
-            result_dict[example_index][feature.unique_id][(start_idx, end_idx)] = []
-          result_dict[example_index][feature.unique_id][(start_idx, end_idx)].append((start_log_prob, end_log_prob))
-
-
-def write_predictions_v1(result_dict, all_examples, all_features,
-                         all_results, n_best_size, max_answer_length,
-                         output_prediction_file, output_nbest_file):
-  """Write final predictions to the json file and log-odds of null if needed."""
-  tf.logging.info("Writing predictions to: %s" % (output_prediction_file))
-  tf.logging.info("Writing nbest to: %s" % (output_nbest_file))
-
-  example_index_to_features = collections.defaultdict(list)
-  for feature in all_features:
-    example_index_to_features[feature.example_index].append(feature)
-
-  unique_id_to_result = {}
-  for result in all_results:
-    unique_id_to_result[result.unique_id] = result
-
-  all_predictions = collections.OrderedDict()
-  all_nbest_json = collections.OrderedDict()
-  scores_diff_json = collections.OrderedDict()
-
-  for (example_index, example) in enumerate(all_examples):
-    features = example_index_to_features[example_index]
-
-    prelim_predictions = []
-    # keep track of the minimum score of null start+end of position 0
-    score_null = 1000000  # large and positive
-    min_null_feature_index = 0  # the paragraph slice with min mull score
-    null_start_logit = 0  # the start logit at the slice with min null score
-    null_end_logit = 0  # the end logit at the slice with min null score
-    for (feature_index, feature) in enumerate(features):
-      for ((start_idx, end_idx), logprobs) in \
-        result_dict[example_index][feature.unique_id].items():
-        start_log_prob = 0
-        end_log_prob = 0
-        for logprob in logprobs:
-          start_log_prob += logprob[0]
-          end_log_prob += logprob[1]
-        prelim_predictions.append(
-            _PrelimPrediction(
-                feature_index=feature_index,
-                start_index=start_idx,
-                end_index=end_idx,
-                start_log_prob=start_log_prob / len(logprobs),
-                end_log_prob=end_log_prob / len(logprobs)))
-
-    prelim_predictions = sorted(
-        prelim_predictions,
-        key=lambda x: (x.start_log_prob + x.end_log_prob),
-        reverse=True)
-
-    seen_predictions = {}
-    nbest = []
-    for pred in prelim_predictions:
-      if len(nbest) >= n_best_size:
-        break
-      feature = features[pred.feature_index]
-      if pred.start_index >= 0:  # this is a non-null prediction
-        tok_start_to_orig_index = feature.tok_start_to_orig_index
-        tok_end_to_orig_index = feature.tok_end_to_orig_index
-        start_orig_pos = tok_start_to_orig_index[pred.start_index]
-        end_orig_pos = tok_end_to_orig_index[pred.end_index]
-
-        paragraph_text = example.paragraph_text
-        final_text = paragraph_text[start_orig_pos: end_orig_pos + 1].strip()
-        if final_text in seen_predictions:
-          continue
-
-        seen_predictions[final_text] = True
-      else:
-        final_text = ""
-        seen_predictions[final_text] = True
-
-      nbest.append(
-          _NbestPrediction(
-              text=final_text,
-              start_log_prob=pred.start_log_prob,
-              end_log_prob=pred.end_log_prob))
-
-    # In very rare edge cases we could have no valid predictions. So we
-    # just create a nonce prediction in this case to avoid failure.
-    if not nbest:
-      nbest.append(
-          _NbestPrediction(text="empty", start_log_prob=0.0, end_log_prob=0.0))
-
-    assert len(nbest) >= 1
-
-    total_scores = []
-    best_non_null_entry = None
-    for entry in nbest:
-      total_scores.append(entry.start_log_prob + entry.end_log_prob)
-      if not best_non_null_entry:
-        if entry.text:
-          best_non_null_entry = entry
-
-    probs = _compute_softmax(total_scores)
-
-    nbest_json = []
-    for (i, entry) in enumerate(nbest):
-      output = collections.OrderedDict()
-      output["text"] = entry.text
-      output["probability"] = probs[i]
-      output["start_log_prob"] = entry.start_log_prob
-      output["end_log_prob"] = entry.end_log_prob
-      nbest_json.append(output)
-
-    assert len(nbest_json) >= 1
-
-    all_predictions[example.qas_id] = nbest_json[0]["text"]
-    all_nbest_json[example.qas_id] = nbest_json
-
-  with tf.gfile.GFile(output_prediction_file, "w") as writer:
-    writer.write(json.dumps(all_predictions, indent=4) + "\n")
-
-  with tf.gfile.GFile(output_nbest_file, "w") as writer:
-    writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
-
-  return all_predictions
-
-
-####### following are from official QuAC v0.2 evaluation scripts
-def normalize_answer_v1(s):
-  """Lower text and remove punctuation, articles and extra whitespace."""
-
-  def remove_articles(text):
-    return re.sub(r"\b(a|an|the)\b", " ", text)
-
-  def white_space_fix(text):
-    return " ".join(text.split())
-
-  def remove_punc(text):
-    exclude = set(string.punctuation)
-    return "".join(ch for ch in text if ch not in exclude)
-
-  def lower(text):
-    return text.lower()
-
-  return white_space_fix(remove_articles(remove_punc(lower(s))))
-
-
-def f1_score(prediction, ground_truth):
-  prediction_tokens = normalize_answer_v1(prediction).split()
-  ground_truth_tokens = normalize_answer_v1(ground_truth).split()
-  common = (
-      collections.Counter(prediction_tokens)
-      & collections.Counter(ground_truth_tokens))
-  num_same = sum(common.values())
-  if num_same == 0:
-    return 0
-  precision = 1.0 * num_same / len(prediction_tokens)
-  recall = 1.0 * num_same / len(ground_truth_tokens)
-  f1 = (2 * precision * recall) / (precision + recall)
-  return f1
-
-
-def exact_match_score(prediction, ground_truth):
-  return (normalize_answer_v1(prediction) == normalize_answer_v1(ground_truth))
-
-
-def metric_max_over_ground_truths(metric_fn, prediction, ground_truths):
-  scores_for_ground_truths = []
-  for ground_truth in ground_truths:
-    score = metric_fn(prediction, ground_truth)
-    scores_for_ground_truths.append(score)
-  return max(scores_for_ground_truths)
-
-
-def evaluate_v1(dataset, predictions):
-  f1 = exact_match = total = 0
-  for article in dataset:
-    for paragraph in article["paragraphs"]:
-      for qa in paragraph["qas"]:
-        total += 1
-        if qa["id"] not in predictions:
-          message = ("Unanswered question " + six.ensure_str(qa["id"]) +
-                     "  will receive score 0.")
-          print(message, file=sys.stderr)
-          continue
-        ground_truths = [x["text"] for x in qa["answers"]]
-        # ground_truths = list(map(lambda x: x["text"], qa["answers"]))
-        prediction = predictions[qa["id"]]
-        exact_match += metric_max_over_ground_truths(exact_match_score,
-                                                     prediction, ground_truths)
-        f1 += metric_max_over_ground_truths(f1_score, prediction, ground_truths)
-
-  exact_match = 100.0 * exact_match / total
-  f1 = 100.0 * f1 / total
-
-  return {"exact_match": exact_match, "f1": f1}
-
-####### above are from official QuAC v0.2 evaluation scripts
-####### following are from official QuAC v0.2 evaluation scripts
-def make_qid_to_has_ans(dataset):
-  qid_to_has_ans = {}
-  for article in dataset:
-    for p in article['paragraphs']:
-      for qa in p['qas']:
-        qid_to_has_ans[qa['id']] = bool(qa['answers'])
-  return qid_to_has_ans
-
-def normalize_answer_v2(s):
-  """Lower text and remove punctuation, articles and extra whitespace."""
-  def remove_articles(text):
-    regex = re.compile(r'\b(a|an|the)\b', re.UNICODE)
-    return re.sub(regex, ' ', text)
-  def white_space_fix(text):
-    return ' '.join(text.split())
-  def remove_punc(text):
-    exclude = set(string.punctuation)
-    return ''.join(ch for ch in text if ch not in exclude)
-  def lower(text):
-    return text.lower()
-  return white_space_fix(remove_articles(remove_punc(lower(s))))
-
-def get_tokens(s):
-  if not s: return []
-  return normalize_answer_v2(s).split()
-
-def compute_exact(a_gold, a_pred):
-  return int(normalize_answer_v2(a_gold) == normalize_answer_v2(a_pred))
-
-def compute_f1(a_gold, a_pred):
-  gold_toks = get_tokens(a_gold)
-  pred_toks = get_tokens(a_pred)
-  common = collections.Counter(gold_toks) & collections.Counter(pred_toks)
-  num_same = sum(common.values())
-  if len(gold_toks) == 0 or len(pred_toks) == 0:
-    # If either is no-answer, then F1 is 1 if they agree, 0 otherwise
-    return int(gold_toks == pred_toks)
-  if num_same == 0:
-    return 0
-  precision = 1.0 * num_same / len(pred_toks)
-  recall = 1.0 * num_same / len(gold_toks)
-  f1 = (2 * precision * recall) / (precision + recall)
-  return f1
-
-def get_raw_scores(dataset, preds):
-  exact_scores = {}
-  f1_scores = {}
-  for article in dataset:
-    for p in article['paragraphs']:
-      for qa in p['qas']:
-        qid = qa['id']
-        gold_answers = [a['text'] for a in qa['answers']
-                        if normalize_answer_v2(a['text'])]
-        if not gold_answers:
-          # For unanswerable questions, only correct answer is empty string
-          gold_answers = ['']
-        if qid not in preds:
-          print('Missing prediction for %s' % qid)
-          continue
-        a_pred = preds[qid]
-        # Take max over all gold answers
-        exact_scores[qid] = max(compute_exact(a, a_pred) for a in gold_answers)
-        f1_scores[qid] = max(compute_f1(a, a_pred) for a in gold_answers)
-  return exact_scores, f1_scores
-
-def apply_no_ans_threshold(scores, na_probs, qid_to_has_ans, na_prob_thresh):
-  new_scores = {}
-  for qid, s in scores.items():
-    pred_na = na_probs[qid] > na_prob_thresh
-    if pred_na:
-      new_scores[qid] = float(not qid_to_has_ans[qid])
-    else:
-      new_scores[qid] = s
-  return new_scores
-
-def make_eval_dict(exact_scores, f1_scores, qid_list=None):
-  if not qid_list:
-    total = len(exact_scores)
-    return collections.OrderedDict([
-        ('exact', 100.0 * sum(exact_scores.values()) / total),
-        ('f1', 100.0 * sum(f1_scores.values()) / total),
-        ('total', total),
-    ])
-  else:
-    total = len(qid_list)
-    return collections.OrderedDict([
-        ('exact', 100.0 * sum(exact_scores[k] for k in qid_list) / total),
-        ('f1', 100.0 * sum(f1_scores[k] for k in qid_list) / total),
-        ('total', total),
-    ])
-
-
-def find_best_thresh(preds, scores, na_probs, qid_to_has_ans):
-  num_no_ans = sum(1 for k in qid_to_has_ans if not qid_to_has_ans[k])
-  cur_score = num_no_ans
-  best_score = cur_score
-  best_thresh = 0.0
-  qid_list = sorted(na_probs, key=lambda k: na_probs[k])
-  for i, qid in enumerate(qid_list):
-    if qid not in scores: continue
-    if qid_to_has_ans[qid]:
-      diff = scores[qid]
-    else:
-      if preds[qid]:
-        diff = -1
-      else:
-        diff = 0
-    cur_score += diff
-    if cur_score > best_score:
-      best_score = cur_score
-      best_thresh = na_probs[qid]
-  return 100.0 * best_score / len(scores), best_thresh
-
-
-def find_all_best_thresh(main_eval, preds, exact_raw, f1_raw, na_probs, qid_to_has_ans):
-  best_exact, exact_thresh = find_best_thresh(preds, exact_raw, na_probs, qid_to_has_ans)
-  best_f1, f1_thresh = find_best_thresh(preds, f1_raw, na_probs, qid_to_has_ans)
-  main_eval['best_exact'] = best_exact
-  main_eval['best_exact_thresh'] = exact_thresh
-  main_eval['best_f1'] = best_f1
-  main_eval['best_f1_thresh'] = f1_thresh
-
-
-def merge_eval(main_eval, new_eval, prefix):
-  for k in new_eval:
-    main_eval['%s_%s' % (prefix, k)] = new_eval[k]
-
-####### above are from official QuAC v0.2  evaluation scripts
-
-def accumulate_predictions_v2(result_dict, cls_dict, all_examples,
-                              all_features, all_results, n_best_size,
-                              max_answer_length, start_n_top, end_n_top):
-  """accumulate predictions for each positions in a dictionary."""
-
-  example_index_to_features = collections.defaultdict(list)
-  for feature in all_features:
-    example_index_to_features[feature.example_index].append(feature)
-
-  unique_id_to_result = {}
-  for result in all_results:
-    unique_id_to_result[result.unique_id] = result
-
-  all_predictions = collections.OrderedDict()
-  all_nbest_json = collections.OrderedDict()
-  scores_diff_json = collections.OrderedDict()
-
-  for (example_index, example) in enumerate(all_examples):
-    if example_index not in result_dict:
-      result_dict[example_index] = {}
-    features = example_index_to_features[example_index]
-
-    prelim_predictions = []
-    # keep track of the minimum score of null start+end of position 0
-    score_null = 1000000  # large and positive
-
-    for (feature_index, feature) in enumerate(features):
-      if feature.unique_id not in result_dict[example_index]:
-        result_dict[example_index][feature.unique_id] = {}
-      result = unique_id_to_result[feature.unique_id]
-      cur_null_score = result.cls_logits
-
-      # if we could have irrelevant answers, get the min score of irrelevant
-      score_null = min(score_null, cur_null_score)
-
-      doc_offset = feature.tokens.index("[SEP]") + 1
-      for i in range(start_n_top):
-        for j in range(end_n_top):
-          start_log_prob = result.start_top_log_probs[i]
-          start_index = result.start_top_index[i]
-
-          j_index = i * end_n_top + j
-
-          end_log_prob = result.end_top_log_probs[j_index]
-          end_index = result.end_top_index[j_index]
-          # We could hypothetically create invalid predictions, e.g., predict
-          # that the start of the span is in the question. We throw out all
-          # invalid predictions.
-          if start_index - doc_offset >= len(feature.tok_start_to_orig_index):
-            continue
-          if start_index - doc_offset < 0:
-            continue
-          if end_index - doc_offset >= len(feature.tok_end_to_orig_index):
-            continue
-          if not feature.token_is_max_context.get(start_index, False):
-            continue
-          if end_index < start_index:
-            continue
-          length = end_index - start_index + 1
-          if length > max_answer_length:
-            continue
-          start_idx = start_index - doc_offset
-          end_idx = end_index - doc_offset
-          if (start_idx, end_idx) not in result_dict[example_index][feature.unique_id]:
-            result_dict[example_index][feature.unique_id][(start_idx, end_idx)] = []
-          result_dict[example_index][feature.unique_id][(start_idx, end_idx)].append((start_log_prob, end_log_prob))
-    if example_index not in cls_dict:
-      cls_dict[example_index] = []
-    cls_dict[example_index].append(score_null)
-
-
-def write_predictions_v2(result_dict, cls_dict, all_examples, all_features,
-                         all_results, n_best_size, max_answer_length,
-                         output_prediction_file,
-                         output_nbest_file, output_null_log_odds_file,
-                         null_score_diff_threshold):
-  """Write final predictions to the json file and log-odds of null if needed."""
-  tf.logging.info("Writing predictions to: %s" % (output_prediction_file))
-  tf.logging.info("Writing nbest to: %s" % (output_nbest_file))
-
-  example_index_to_features = collections.defaultdict(list)
-  for feature in all_features:
-    example_index_to_features[feature.example_index].append(feature)
-
-  unique_id_to_result = {}
-  for result in all_results:
-    unique_id_to_result[result.unique_id] = result
-
-  all_predictions = collections.OrderedDict()
-  all_nbest_json = collections.OrderedDict()
-  scores_diff_json = collections.OrderedDict()
-
-  for (example_index, example) in enumerate(all_examples):
-    features = example_index_to_features[example_index]
-
-    prelim_predictions = []
-    # keep track of the minimum score of null start+end of position 0
-    # score_null = 1000000  # large and positive
-
-    for (feature_index, feature) in enumerate(features):
-      for ((start_idx, end_idx), logprobs) in \
-        result_dict[example_index][feature.unique_id].items():
-        start_log_prob = 0
-        end_log_prob = 0
-        for logprob in logprobs:
-          start_log_prob += logprob[0]
-          end_log_prob += logprob[1]
-        prelim_predictions.append(
-            _PrelimPrediction(
-                feature_index=feature_index,
-                start_index=start_idx,
-                end_index=end_idx,
-                start_log_prob=start_log_prob / len(logprobs),
-                end_log_prob=end_log_prob / len(logprobs)))
-
-    prelim_predictions = sorted(
-        prelim_predictions,
-        key=lambda x: (x.start_log_prob + x.end_log_prob),
-        reverse=True)
-
-    seen_predictions = {}
-    nbest = []
-    for pred in prelim_predictions:
-      if len(nbest) >= n_best_size:
-        break
-      feature = features[pred.feature_index]
-
-      tok_start_to_orig_index = feature.tok_start_to_orig_index
-      tok_end_to_orig_index = feature.tok_end_to_orig_index
-      start_orig_pos = tok_start_to_orig_index[pred.start_index]
-      end_orig_pos = tok_end_to_orig_index[pred.end_index]
-
-      paragraph_text = example.paragraph_text
-      final_text = paragraph_text[start_orig_pos: end_orig_pos + 1].strip()
-
-      if final_text in seen_predictions:
-        continue
-
-      seen_predictions[final_text] = True
-
-      nbest.append(
-          _NbestPrediction(
-              text=final_text,
-              start_log_prob=pred.start_log_prob,
-              end_log_prob=pred.end_log_prob))
-
-    # In very rare edge cases we could have no valid predictions. So we
-    # just create a nonce prediction in this case to avoid failure.
-    if not nbest:
-      nbest.append(
-          _NbestPrediction(
-              text="",
-              start_log_prob=-1e6,
-              end_log_prob=-1e6))
-
-    total_scores = []
-    best_non_null_entry = None
-    for entry in nbest:
-      total_scores.append(entry.start_log_prob + entry.end_log_prob)
-      if not best_non_null_entry:
-        best_non_null_entry = entry
-
-    probs = _compute_softmax(total_scores)
-
-    nbest_json = []
-    for (i, entry) in enumerate(nbest):
-      output = collections.OrderedDict()
-      output["text"] = entry.text
-      output["probability"] = probs[i]
-      output["start_log_prob"] = entry.start_log_prob
-      output["end_log_prob"] = entry.end_log_prob
-      nbest_json.append(output)
-
-    assert len(nbest_json) >= 1
-    assert best_non_null_entry is not None
-
-    score_diff = sum(cls_dict[example_index]) / len(cls_dict[example_index])
-    scores_diff_json[example.qas_id] = score_diff
-    # predict null answers when null threshold is provided
-    if null_score_diff_threshold is None or score_diff < null_score_diff_threshold:
-      all_predictions[example.qas_id] = best_non_null_entry.text
-    else:
-      all_predictions[example.qas_id] = ""
-
-    all_nbest_json[example.qas_id] = nbest_json
-    assert len(nbest_json) >= 1
-
-  with tf.gfile.GFile(output_prediction_file, "w") as writer:
-    writer.write(json.dumps(all_predictions, indent=4) + "\n")
-
-  with tf.gfile.GFile(output_nbest_file, "w") as writer:
-    writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
-
-  with tf.gfile.GFile(output_null_log_odds_file, "w") as writer:
-    writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
-  return all_predictions, scores_diff_json
-
-
 def create_v2_model(albert_config, is_training, input_ids, input_mask,
                     segment_ids, use_one_hot_embeddings, additional_special_tokens,
                     features, max_seq_length, start_n_top, end_n_top, dropout_prob):
@@ -1728,6 +1019,361 @@ def v2_model_fn_builder(albert_config, init_checkpoint, learning_rate,
     return output_spec
 
   return model_fn
+
+
+####### following are from official QuAC v0.2 evaluation scripts
+def make_qid_to_has_ans(dataset):
+  qid_to_has_ans = {}
+  for article in dataset:
+    for p in article['paragraphs']:
+      for qa in p['qas']:
+        qid_to_has_ans[qa['id']] = bool(qa['answers'])
+  return qid_to_has_ans
+
+def normalize_answer_v2(s):
+  """Lower text and remove punctuation, articles and extra whitespace."""
+  def remove_articles(text):
+    regex = re.compile(r'\b(a|an|the)\b', re.UNICODE)
+    return re.sub(regex, ' ', text)
+  def white_space_fix(text):
+    return ' '.join(text.split())
+  def remove_punc(text):
+    exclude = set(string.punctuation)
+    return ''.join(ch for ch in text if ch not in exclude)
+  def lower(text):
+    return text.lower()
+  return white_space_fix(remove_articles(remove_punc(lower(s))))
+
+def get_tokens(s):
+  if not s: return []
+  return normalize_answer_v2(s).split()
+
+def compute_exact(a_gold, a_pred):
+  return int(normalize_answer_v2(a_gold) == normalize_answer_v2(a_pred))
+
+def compute_f1(a_gold, a_pred):
+  gold_toks = get_tokens(a_gold)
+  pred_toks = get_tokens(a_pred)
+  common = collections.Counter(gold_toks) & collections.Counter(pred_toks)
+  num_same = sum(common.values())
+  if len(gold_toks) == 0 or len(pred_toks) == 0:
+    # If either is no-answer, then F1 is 1 if they agree, 0 otherwise
+    return int(gold_toks == pred_toks)
+  if num_same == 0:
+    return 0
+  precision = 1.0 * num_same / len(pred_toks)
+  recall = 1.0 * num_same / len(gold_toks)
+  f1 = (2 * precision * recall) / (precision + recall)
+  return f1
+
+def get_raw_scores(dataset, preds):
+  exact_scores = {}
+  f1_scores = {}
+  for article in dataset:
+    for p in article['paragraphs']:
+      for qa in p['qas']:
+        qid = qa['id']
+        gold_answers = [a['text'] for a in qa['answers']
+                        if normalize_answer_v2(a['text'])]
+        if not gold_answers:
+          # For unanswerable questions, only correct answer is empty string
+          gold_answers = ['']
+        if qid not in preds:
+          print('Missing prediction for %s' % qid)
+          continue
+        a_pred = preds[qid]
+        # Take max over all gold answers
+        exact_scores[qid] = max(compute_exact(a, a_pred) for a in gold_answers)
+        f1_scores[qid] = max(compute_f1(a, a_pred) for a in gold_answers)
+  return exact_scores, f1_scores
+
+def apply_no_ans_threshold(scores, na_probs, qid_to_has_ans, na_prob_thresh):
+  new_scores = {}
+  for qid, s in scores.items():
+    pred_na = na_probs[qid] > na_prob_thresh
+    if pred_na:
+      new_scores[qid] = float(not qid_to_has_ans[qid])
+    else:
+      new_scores[qid] = s
+  return new_scores
+
+def make_eval_dict(exact_scores, f1_scores, qid_list=None):
+  if not qid_list:
+    total = len(exact_scores)
+    return collections.OrderedDict([
+        ('exact', 100.0 * sum(exact_scores.values()) / total),
+        ('f1', 100.0 * sum(f1_scores.values()) / total),
+        ('total', total),
+    ])
+  else:
+    total = len(qid_list)
+    return collections.OrderedDict([
+        ('exact', 100.0 * sum(exact_scores[k] for k in qid_list) / total),
+        ('f1', 100.0 * sum(f1_scores[k] for k in qid_list) / total),
+        ('total', total),
+    ])
+
+def find_best_thresh(preds, scores, na_probs, qid_to_has_ans):
+  num_no_ans = sum(1 for k in qid_to_has_ans if not qid_to_has_ans[k])
+  cur_score = num_no_ans
+  best_score = cur_score
+  best_thresh = 0.0
+  qid_list = sorted(na_probs, key=lambda k: na_probs[k])
+  for i, qid in enumerate(qid_list):
+    if qid not in scores: continue
+    if qid_to_has_ans[qid]:
+      diff = scores[qid]
+    else:
+      if preds[qid]:
+        diff = -1
+      else:
+        diff = 0
+    cur_score += diff
+    if cur_score > best_score:
+      best_score = cur_score
+      best_thresh = na_probs[qid]
+  return 100.0 * best_score / len(scores), best_thresh
+
+def find_all_best_thresh(main_eval, preds, exact_raw, f1_raw, na_probs, qid_to_has_ans):
+  best_exact, exact_thresh = find_best_thresh(preds, exact_raw, na_probs, qid_to_has_ans)
+  best_f1, f1_thresh = find_best_thresh(preds, f1_raw, na_probs, qid_to_has_ans)
+  main_eval['best_exact'] = best_exact
+  main_eval['best_exact_thresh'] = exact_thresh
+  main_eval['best_f1'] = best_f1
+  main_eval['best_f1_thresh'] = f1_thresh
+
+def merge_eval(main_eval, new_eval, prefix):
+  for k in new_eval:
+    main_eval['%s_%s' % (prefix, k)] = new_eval[k]
+####### above are from official QuAC v0.2  evaluation scripts
+
+
+def accumulate_predictions_v2(result_dict, cls_dict, all_examples,
+                              all_features, all_results, n_best_size,
+                              max_answer_length, start_n_top, end_n_top):
+  """accumulate predictions for each positions in a dictionary."""
+
+  example_index_to_features = collections.defaultdict(list)
+  for feature in all_features:
+    example_index_to_features[feature.example_index].append(feature)
+
+  unique_id_to_result = {}
+  for result in all_results:
+    unique_id_to_result[result.unique_id] = result
+
+  all_predictions = collections.OrderedDict()
+  all_nbest_json = collections.OrderedDict()
+  scores_diff_json = collections.OrderedDict()
+
+  for (example_index, example) in enumerate(all_examples):
+    if example_index not in result_dict:
+      result_dict[example_index] = {}
+    features = example_index_to_features[example_index]
+
+    prelim_predictions = []
+    # keep track of the minimum score of null start+end of position 0
+    score_null = 1000000  # large and positive
+
+    for (feature_index, feature) in enumerate(features):
+      if feature.unique_id not in result_dict[example_index]:
+        result_dict[example_index][feature.unique_id] = {}
+      result = unique_id_to_result[feature.unique_id]
+      cur_null_score = result.cls_logits
+
+      # if we could have irrelevant answers, get the min score of irrelevant
+      score_null = min(score_null, cur_null_score)
+
+      doc_offset = feature.tokens.index("[SEP]") + 1
+      for i in range(start_n_top):
+        for j in range(end_n_top):
+          start_log_prob = result.start_top_log_probs[i]
+          start_index = result.start_top_index[i]
+
+          j_index = i * end_n_top + j
+
+          end_log_prob = result.end_top_log_probs[j_index]
+          end_index = result.end_top_index[j_index]
+          # We could hypothetically create invalid predictions, e.g., predict
+          # that the start of the span is in the question. We throw out all
+          # invalid predictions.
+          if start_index - doc_offset >= len(feature.tok_start_to_orig_index):
+            continue
+          if start_index - doc_offset < 0:
+            continue
+          if end_index - doc_offset >= len(feature.tok_end_to_orig_index):
+            continue
+          if not feature.token_is_max_context.get(start_index, False):
+            continue
+          if end_index < start_index:
+            continue
+          length = end_index - start_index + 1
+          if length > max_answer_length:
+            continue
+          start_idx = start_index - doc_offset
+          end_idx = end_index - doc_offset
+          if (start_idx, end_idx) not in result_dict[example_index][feature.unique_id]:
+            result_dict[example_index][feature.unique_id][(start_idx, end_idx)] = []
+          result_dict[example_index][feature.unique_id][(start_idx, end_idx)].append((start_log_prob, end_log_prob))
+    if example_index not in cls_dict:
+      cls_dict[example_index] = []
+    cls_dict[example_index].append(score_null)
+
+
+def write_predictions_v2(result_dict, cls_dict, all_examples, all_features,
+                         all_results, n_best_size, max_answer_length,
+                         output_prediction_file,
+                         output_nbest_file, output_null_log_odds_file,
+                         null_score_diff_threshold):
+  """Write final predictions to the json file and log-odds of null if needed."""
+  tf.logging.info("Writing predictions to: %s" % (output_prediction_file))
+  tf.logging.info("Writing nbest to: %s" % (output_nbest_file))
+
+  example_index_to_features = collections.defaultdict(list)
+  for feature in all_features:
+    example_index_to_features[feature.example_index].append(feature)
+
+  unique_id_to_result = {}
+  for result in all_results:
+    unique_id_to_result[result.unique_id] = result
+
+  all_predictions = collections.OrderedDict()
+  all_nbest_json = collections.OrderedDict()
+  scores_diff_json = collections.OrderedDict()
+
+  for (example_index, example) in enumerate(all_examples):
+    features = example_index_to_features[example_index]
+
+    prelim_predictions = []
+    # keep track of the minimum score of null start+end of position 0
+    # score_null = 1000000  # large and positive
+
+    for (feature_index, feature) in enumerate(features):
+      for ((start_idx, end_idx), logprobs) in \
+        result_dict[example_index][feature.unique_id].items():
+        start_log_prob = 0
+        end_log_prob = 0
+        for logprob in logprobs:
+          start_log_prob += logprob[0]
+          end_log_prob += logprob[1]
+        prelim_predictions.append(
+            _PrelimPrediction(
+                feature_index=feature_index,
+                start_index=start_idx,
+                end_index=end_idx,
+                start_log_prob=start_log_prob / len(logprobs),
+                end_log_prob=end_log_prob / len(logprobs)))
+
+    prelim_predictions = sorted(
+        prelim_predictions,
+        key=lambda x: (x.start_log_prob + x.end_log_prob),
+        reverse=True)
+
+    seen_predictions = {}
+    nbest = []
+    for pred in prelim_predictions:
+      if len(nbest) >= n_best_size:
+        break
+      feature = features[pred.feature_index]
+
+      tok_start_to_orig_index = feature.tok_start_to_orig_index
+      tok_end_to_orig_index = feature.tok_end_to_orig_index
+      start_orig_pos = tok_start_to_orig_index[pred.start_index]
+      end_orig_pos = tok_end_to_orig_index[pred.end_index]
+
+      paragraph_text = example.paragraph_text
+      final_text = paragraph_text[start_orig_pos: end_orig_pos + 1].strip()
+
+      if final_text in seen_predictions:
+        continue
+
+      seen_predictions[final_text] = True
+
+      nbest.append(
+          _NbestPrediction(
+              text=final_text,
+              start_log_prob=pred.start_log_prob,
+              end_log_prob=pred.end_log_prob))
+
+    # In very rare edge cases we could have no valid predictions. So we
+    # just create a nonce prediction in this case to avoid failure.
+    if not nbest:
+      nbest.append(
+          _NbestPrediction(
+              text="",
+              start_log_prob=-1e6,
+              end_log_prob=-1e6))
+
+    total_scores = []
+    best_non_null_entry = None
+    for entry in nbest:
+      total_scores.append(entry.start_log_prob + entry.end_log_prob)
+      if not best_non_null_entry:
+        best_non_null_entry = entry
+
+    probs = _compute_softmax(total_scores)
+
+    nbest_json = []
+    for (i, entry) in enumerate(nbest):
+      output = collections.OrderedDict()
+      output["text"] = entry.text
+      output["probability"] = probs[i]
+      output["start_log_prob"] = entry.start_log_prob
+      output["end_log_prob"] = entry.end_log_prob
+      nbest_json.append(output)
+
+    assert len(nbest_json) >= 1
+    assert best_non_null_entry is not None
+
+    score_diff = sum(cls_dict[example_index]) / len(cls_dict[example_index])
+    scores_diff_json[example.qas_id] = score_diff
+    # predict null answers when null threshold is provided
+    if null_score_diff_threshold is None or score_diff < null_score_diff_threshold:
+      all_predictions[example.qas_id] = best_non_null_entry.text
+    else:
+      all_predictions[example.qas_id] = "CANNOTANSWER"
+
+    all_nbest_json[example.qas_id] = nbest_json
+    assert len(nbest_json) >= 1
+
+  with tf.gfile.GFile(output_nbest_file, "w") as writer:
+    writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
+
+  with tf.gfile.GFile(output_null_log_odds_file, "w") as writer:
+    writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
+
+  data_lookup = {}
+  for qas_id in all_predictions.keys():
+    id_items = qas_id.split('#')
+    id = id_items[0]
+    turn_id = int(id_items[1])
+
+    answer_text = all_predictions[qas_id]
+
+    if id not in data_lookup:
+      data_lookup[id] = []
+
+    data_lookup[id].append({
+      "qas_id": qas_id,
+      "turn_id": turn_id,
+      "answer_text": answer_text,
+      "yes_no": "x",
+      "follow_up": "m"
+    })
+
+  with open(output_prediction_file, "w") as file:
+    for id in data_lookup.keys():
+      data_list = sorted(data_lookup[id], key=lambda x: x["turn_id"])
+
+      output_data = json.dumps({
+        "best_span_str": [data["answer_text"] for data in data_list],
+        "qid": [data["qas_id"] for data in data_list],
+        "yesno": [data["yes_no"] for data in data_list],
+        "followup": [data["follow_up"] for data in data_list]
+      })
+
+      file.write("{0}\n".format(output_data))
+
+  return all_predictions, scores_diff_json
 
 
 def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,

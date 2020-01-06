@@ -1145,7 +1145,7 @@ def eval_fn(val_results, model_results, verbose, min_f1):
   sentence_overlap = 0.
   para_overlap = 0.
   total_qs = 0.
-  f1_stats = collections.efaultdict(list)
+  f1_stats = collections.defaultdict(list)
   unfiltered_f1s = []
   human_f1 = []
   HEQ = 0.

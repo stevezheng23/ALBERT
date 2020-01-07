@@ -659,6 +659,10 @@ def _compute_softmax(scores):
   return probs
 
 
+def sigmoid(x):
+  return 1 / (1 + math.exp(-x))
+
+
 class FeatureWriter(object):
   """Writes InputFeature to TF example file."""
 
@@ -1455,7 +1459,7 @@ def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
     turn_id = int(id_items[1])
 
     answer_text = predictions[qas_id]
-    null_score = na_probs[qas_id]
+    null_score = sigmoid(na_probs[qas_id])
 
     if id not in data_lookup:
       data_lookup[id] = []

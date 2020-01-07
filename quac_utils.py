@@ -1483,12 +1483,14 @@ def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
       for data in data_list:
         preds[id][data["qas_id"]] = data["answer_text"] if data["null_score"] < null_score_threshold else "CANNOTANSWER", "x", "m"
 
+    print('NULL Score Threshold: %.1f' % null_score_threshold)
     metric_json = eval_fn(prediction_json, preds, False, 0.4)
+    metric_json["null_score_threshold"] = null_score_threshold
     threshold_metric[null_score_threshold] = metric_json
 
   threshold_metric_items = sorted(threshold_metric.items(), key=lambda x: x[1]["f1"] + x[1]["HEQ"], reverse=True)
   best_null_score_threshold, best_metric_json = threshold_metric_items[0]
-  best_metric_json["null_score_threshold"] = best_null_score_threshold
+  
   return best_metric_json
 
 

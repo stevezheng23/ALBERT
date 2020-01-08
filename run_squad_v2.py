@@ -449,7 +449,7 @@ def main(_):
       global_step = -1
       best_perf = -1
       checkpoint_path = None
-    while global_step < num_train_steps:
+    if global_step < 0:
       steps_and_files = {}
       filenames = tf.gfile.ListDirectory(FLAGS.output_dir)
       for filename in filenames:

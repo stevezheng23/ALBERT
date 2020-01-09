@@ -141,6 +141,8 @@ flags.DEFINE_integer(
     "The maximum length of an answer that can be generated. This is needed "
     "because the start and end predictions are not conditioned on one another.")
 
+flags.DEFINE_integer("seed", 10000, "Random seed for data shuffle & weight initialization.")
+
 flags.DEFINE_bool("use_tpu", False, "Whether to use TPU or GPU/CPU.")
 
 tf.flags.DEFINE_string(
@@ -266,7 +268,7 @@ def main(_):
 
   # Pre-shuffle the input to avoid having to make a very large shuffle
   # buffer in in the `input_fn`.
-  rng = random.Random(10000)
+  rng = random.Random(FLAGS.seed)
   rng.shuffle(train_examples)
 
   model_fn = quac_utils.v2_model_fn_builder(

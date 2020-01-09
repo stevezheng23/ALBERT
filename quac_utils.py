@@ -161,17 +161,16 @@ def read_quac_examples(input_file, is_training):
   def get_answer_span(context,
                       qas,
                       no_answer):
-    orig_text = qas["orig_answer"]["text"].lower()
+    orig_text = qas["orig_answer"]["text"].rstrip()
     answer_start = qas["orig_answer"]["answer_start"]
 
     if no_answer or not orig_text or answer_start < 0:
       return "", -1, -1
 
     answer_end = answer_start + len(orig_text) - 1
-    answer_text = context[answer_start:answer_end + 1].lower()
-
-    assert orig_text == answer_text
     answer_text = context[answer_start:answer_end + 1]
+
+    assert orig_text.lower().strip() == answer_text.lower().strip()
 
     return answer_text, answer_start, answer_end
 
@@ -1490,7 +1489,7 @@ def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
 
   threshold_metric_items = sorted(threshold_metric.items(), key=lambda x: x[1]["f1"] + x[1]["HEQ"], reverse=True)
   best_null_score_threshold, best_metric_json = threshold_metric_items[0]
-  
+
   return best_metric_json
 
 

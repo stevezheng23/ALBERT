@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # Lint as: python2, python3
-"""Utility functions for QuAC v0.2 datasets."""
+"""Utility functions for CoQA v1.0 datasets."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -56,7 +56,7 @@ RawResultV2 = collections.namedtuple(
      "end_top_log_probs", "end_top_index", "cls_logits"])
 
 
-class QuacExample(object):
+class CoqaExample(object):
   """A single training/test example for simple sequence classification.
 
      For examples without an answer, the start and end position are -1.
@@ -132,8 +132,8 @@ class InputFeatures(object):
     self.p_mask = p_mask
 
 
-def read_quac_examples(input_file, is_training):
-  """Read a QuAC json file into a list of QuacExample."""
+def read_coqa_examples(input_file, is_training):
+  """Read a CoQA json file into a list of CoqaExample."""
   with tf.gfile.Open(input_file, "r") as reader:
     input_data = json.load(reader)["data"]
 
@@ -191,7 +191,7 @@ def read_quac_examples(input_file, is_training):
         is_impossible = (qas["orig_answer"]["text"] == "CANNOTANSWER")
         orig_answer_text, start_position, _ = get_answer_span(paragraph_text, qas, is_impossible)
 
-        example = QuacExample(
+        example = CoqaExample(
           qas_id=qas_id,
           question_text=question_text,
           paragraph_text=paragraph_text,
@@ -712,7 +712,7 @@ def input_fn_builder(input_file, seq_length, is_training,
       "input_mask": tf.FixedLenFeature([seq_length], tf.int64),
       "segment_ids": tf.FixedLenFeature([seq_length], tf.int64),
   }
-  # p_mask is not required for QuAC v0.2
+  # p_mask is not required for CoQA v1.0
   if is_v2:
     name_to_features["p_mask"] = tf.FixedLenFeature([seq_length], tf.int64)
 
@@ -1024,7 +1024,7 @@ def v2_model_fn_builder(albert_config, init_checkpoint, learning_rate,
   return model_fn
 
 
-####### following are from official QuAC v0.2 evaluation scripts
+####### following are from official CoQA v1.0 evaluation scripts
 def normalize_answer(s):
   """Lower text and remove punctuation, articles and extra whitespace."""
   def remove_articles(text):
@@ -1237,7 +1237,7 @@ def eval_fn(val_results, model_results, verbose, min_f1):
   print('Model F1 >= Human F1 (Dialogs): %d / %d, %.1f%%' % (DHEQ, total_dials, 100.0 * DHEQ / total_dials))
   print("=======================")
   return metric_json
-####### above are from official QuAC v0.2  evaluation scripts
+####### above are from official CoQA v1.0  evaluation scripts
 
 
 def accumulate_predictions_v2(result_dict, cls_dict, all_examples,

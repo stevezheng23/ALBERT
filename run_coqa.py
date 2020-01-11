@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # Lint as: python2, python3
-"""Run ALBERT on QuAC v0.2 using sentence piece tokenization."""
+"""Run ALBERT on CoQA v1.0 using sentence piece tokenization."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -26,7 +26,7 @@ import random
 import time
 
 import modeling
-import quac_utils
+import coqa_utils
 import tokenization
 import six
 import tensorflow as tf
@@ -64,11 +64,11 @@ flags.DEFINE_string(
 
 ## Other parameters
 flags.DEFINE_string("train_file", None,
-                    "QuAC json for training. E.g., train-v0.2.json")
+                    "CoQA json for training. E.g., train-v1.0.json")
 
 flags.DEFINE_string(
     "predict_file", None,
-    "QuAC json for predictions. E.g., dev-v0.2.json or test-v0.2.json")
+    "CoQA json for predictions. E.g., dev-v1.0.json or test-v1.0.json")
 
 flags.DEFINE_string("train_feature_file", None,
                     "training feature file.")
@@ -255,7 +255,7 @@ def main(_):
   train_examples = None
   num_train_steps = None
   num_warmup_steps = None
-  train_examples = quac_utils.read_quac_examples(input_file=FLAGS.train_file, is_training=True)
+  train_examples = coqa_utils.read_coqa_examples(input_file=FLAGS.train_file, is_training=True)
 
   if FLAGS.use_tpu:
       num_train_steps = int(len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
@@ -271,7 +271,7 @@ def main(_):
   rng = random.Random(FLAGS.seed)
   rng.shuffle(train_examples)
 
-  model_fn = quac_utils.v2_model_fn_builder(
+  model_fn = coqa_utils.v2_model_fn_builder(
       albert_config=albert_config,
       init_checkpoint=FLAGS.init_checkpoint,
       learning_rate=FLAGS.learning_rate,
@@ -300,9 +300,9 @@ def main(_):
     # in memory.
 
     if not tf.gfile.Exists(FLAGS.train_feature_file):
-      train_writer = quac_utils.FeatureWriter(
+      train_writer = coqa_utils.FeatureWriter(
           filename=os.path.join(FLAGS.train_feature_file), is_training=True)
-      quac_utils.convert_examples_to_features(
+      coqa_utils.convert_examples_to_features(
           examples=train_examples,
           tokenizer=tokenizer,
           max_seq_length=FLAGS.max_seq_length,
@@ -320,7 +320,7 @@ def main(_):
     tf.logging.info("  Num steps = %d", num_train_steps)
     del train_examples
 
-    train_input_fn = quac_utils.input_fn_builder(
+    train_input_fn = coqa_utils.input_fn_builder(
         input_file=FLAGS.train_feature_file,
         seq_length=FLAGS.max_seq_length,
         is_training=True,
@@ -333,7 +333,7 @@ def main(_):
   if FLAGS.do_predict:
     with tf.gfile.Open(FLAGS.predict_file) as predict_file:
       prediction_json = json.load(predict_file)["data"]
-    eval_examples = quac_utils.read_quac_examples(
+    eval_examples = coqa_utils.read_coqa_examples(
         input_file=FLAGS.predict_file, is_training=False)
 
     if (tf.gfile.Exists(FLAGS.predict_feature_file) and tf.gfile.Exists(
@@ -343,7 +343,7 @@ def main(_):
       with tf.gfile.Open(FLAGS.predict_feature_left_file, "rb") as fin:
         eval_features = pickle.load(fin)
     else:
-      eval_writer = quac_utils.FeatureWriter(
+      eval_writer = coqa_utils.FeatureWriter(
           filename=FLAGS.predict_feature_file, is_training=False)
       eval_features = []
 
@@ -351,7 +351,7 @@ def main(_):
         eval_features.append(feature)
         eval_writer.process_feature(feature)
 
-      quac_utils.convert_examples_to_features(
+      coqa_utils.convert_examples_to_features(
           examples=eval_examples,
           tokenizer=tokenizer,
           max_seq_length=FLAGS.max_seq_length,
@@ -370,7 +370,7 @@ def main(_):
     tf.logging.info("  Num split examples = %d", len(eval_features))
     tf.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
 
-    predict_input_fn = quac_utils.input_fn_builder(
+    predict_input_fn = coqa_utils.input_fn_builder(
         input_file=FLAGS.predict_feature_file,
         seq_length=FLAGS.max_seq_length,
         is_training=False,
@@ -380,7 +380,7 @@ def main(_):
         is_v2=True)
 
     def get_result(checkpoint):
-      """Evaluate the checkpoint on QuAC v0.2."""
+      """Evaluate the checkpoint on CoQA v0.2."""
       # If running eval on the TPU, you will need to specify the number of
       # steps.
       reader = tf.train.NewCheckpointReader(checkpoint)
@@ -401,7 +401,7 @@ def main(_):
 
         cls_logits = float(result["cls_logits"].flat[0])
         all_results.append(
-            quac_utils.RawResultV2(
+            coqa_utils.RawResultV2(
                 unique_id=unique_id,
                 start_top_log_probs=start_top_log_probs,
                 start_top_index=start_top_index,
@@ -418,12 +418,12 @@ def main(_):
 
       result_dict = {}
       cls_dict = {}
-      quac_utils.accumulate_predictions_v2(
+      coqa_utils.accumulate_predictions_v2(
           result_dict, cls_dict, eval_examples, eval_features,
           all_results, FLAGS.n_best_size, FLAGS.max_answer_length,
           FLAGS.start_n_top, FLAGS.end_n_top)
 
-      return quac_utils.evaluate_v2(
+      return coqa_utils.evaluate_v2(
           result_dict, cls_dict, prediction_json, eval_examples,
           eval_features, all_results, FLAGS.n_best_size,
           FLAGS.max_answer_length, output_prediction_file, output_nbest_file,

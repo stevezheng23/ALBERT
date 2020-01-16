@@ -413,8 +413,12 @@ def main(_):
           FLAGS.output_dir, "predictions.json")
       output_nbest_file = os.path.join(
           FLAGS.output_dir, "nbest_predictions.json")
-      output_null_log_odds_file = os.path.join(
-          FLAGS.output_dir, "null_odds.json")
+      output_null_probs_file = os.path.join(
+          FLAGS.output_dir, "null_probs.json")
+      output_yes_probs_file = os.path.join(
+          FLAGS.output_dir, "yes_probs.json")
+      output_no_probs_file = os.path.join(
+          FLAGS.output_dir, "no_probs.json")
 
       result_dict = {}
       cls_dict = {}
@@ -427,7 +431,7 @@ def main(_):
           result_dict, cls_dict, prediction_json, eval_examples,
           eval_features, all_results, FLAGS.n_best_size,
           FLAGS.max_answer_length, output_prediction_file, output_nbest_file,
-          output_null_log_odds_file), int(global_step)
+          output_null_probs_file, output_yes_probs_file, output_no_probs_file), int(global_step)
 
     def _find_valid_cands(curr_step):
       filenames = tf.gfile.ListDirectory(FLAGS.output_dir)

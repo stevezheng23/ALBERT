@@ -331,8 +331,7 @@ def main(_):
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
 
   if FLAGS.do_predict:
-    with tf.gfile.Open(FLAGS.predict_file) as predict_file:
-      prediction_json = json.load(predict_file)["data"]
+    evaluator = coqa_utils.CoQAEvaluator(FLAGS.predict_file)
     eval_examples = coqa_utils.read_coqa_examples(
         input_file=FLAGS.predict_file, is_training=False)
 
@@ -428,7 +427,7 @@ def main(_):
           FLAGS.start_n_top, FLAGS.end_n_top)
 
       return coqa_utils.evaluate_v2(
-          result_dict, cls_dict, prediction_json, eval_examples,
+          result_dict, cls_dict, evaluator, eval_examples,
           eval_features, all_results, FLAGS.n_best_size,
           FLAGS.max_answer_length, output_prediction_file, output_nbest_file,
           output_null_probs_file, output_yes_probs_file, output_no_probs_file), int(global_step)

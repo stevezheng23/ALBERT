@@ -1560,15 +1560,21 @@ def accumulate_predictions_v2(result_dict, cls_dict, all_examples,
     prelim_predictions = []
     # keep track of the minimum score of null start+end of position 0
     score_null = 1000000  # large and positive
+    score_yes = -1000000  # large and negative
+    score_no = -1000000  # large and negative
 
     for (feature_index, feature) in enumerate(features):
       if feature.unique_id not in result_dict[example_index]:
         result_dict[example_index][feature.unique_id] = {}
       result = unique_id_to_result[feature.unique_id]
       cur_null_score = result.cls_logits
+      cur_yes_score = result.yes_logits
+      cur_no_score = result.no_logits
 
       # if we could have irrelevant answers, get the min score of irrelevant
       score_null = min(score_null, cur_null_score)
+      score_yes = max(score_yes, cur_yes_score)
+      score_no = max(score_no, cur_no_score)
 
       doc_offset = feature.tokens.index("[SEP]") + 1
       for i in range(start_n_top):
@@ -1601,16 +1607,23 @@ def accumulate_predictions_v2(result_dict, cls_dict, all_examples,
           if (start_idx, end_idx) not in result_dict[example_index][feature.unique_id]:
             result_dict[example_index][feature.unique_id][(start_idx, end_idx)] = []
           result_dict[example_index][feature.unique_id][(start_idx, end_idx)].append((start_log_prob, end_log_prob))
+
     if example_index not in cls_dict:
-      cls_dict[example_index] = []
-    cls_dict[example_index].append(score_null)
+      cls_dict[example_index] = {
+        "null": [],
+        "yes": [],
+        "no": []
+      }
+
+    cls_dict[example_index]["null"].append(score_null)
+    cls_dict[example_index]["yes"].append(score_yes)
+    cls_dict[example_index]["no"].append(score_no)
 
 
 def write_predictions_v2(result_dict, cls_dict, all_examples, all_features,
                          all_results, n_best_size, max_answer_length,
-                         output_prediction_file,
-                         output_nbest_file, output_null_log_odds_file,
-                         null_score_diff_threshold):
+                         output_prediction_file, output_nbest_file,
+                         output_null_probs_file, output_yes_probs_file, output_no_probs_file):
   """Write final predictions to the json file and log-odds of null if needed."""
   tf.logging.info("Writing predictions to: %s" % (output_prediction_file))
   tf.logging.info("Writing nbest to: %s" % (output_nbest_file))
@@ -1625,7 +1638,9 @@ def write_predictions_v2(result_dict, cls_dict, all_examples, all_features,
 
   all_predictions = collections.OrderedDict()
   all_nbest_json = collections.OrderedDict()
-  scores_diff_json = collections.OrderedDict()
+  scores_null_json = collections.OrderedDict()
+  scores_yes_json = collections.OrderedDict()
+  scores_no_json = collections.OrderedDict()
 
   for (example_index, example) in enumerate(all_examples):
     features = example_index_to_features[example_index]
@@ -1711,16 +1726,12 @@ def write_predictions_v2(result_dict, cls_dict, all_examples, all_features,
     assert len(nbest_json) >= 1
     assert best_non_null_entry is not None
 
-    score_diff = sum(cls_dict[example_index]) / len(cls_dict[example_index])
-    scores_diff_json[example.qas_id] = score_diff
-    # predict null answers when null threshold is provided
-    if null_score_diff_threshold is None or score_diff < null_score_diff_threshold:
-      all_predictions[example.qas_id] = best_non_null_entry.text
-    else:
-      all_predictions[example.qas_id] = "CANNOTANSWER"
-
+    all_predictions[example.qas_id] = best_non_null_entry.text
     all_nbest_json[example.qas_id] = nbest_json
-    assert len(nbest_json) >= 1
+
+    scores_null_json[example.qas_id] = sum(cls_dict[example_index]["null"]) / len(cls_dict[example_index])
+    scores_yes_json[example.qas_id] = sum(cls_dict[example_index]["yes"]) / len(cls_dict[example_index])
+    scores_no_json[example.qas_id] = sum(cls_dict[example_index]["no"]) / len(cls_dict[example_index])
 
   with tf.gfile.GFile(output_prediction_file, "w") as writer:
     writer.write(json.dumps(all_predictions, indent=4) + "\n")
@@ -1728,24 +1739,31 @@ def write_predictions_v2(result_dict, cls_dict, all_examples, all_features,
   with tf.gfile.GFile(output_nbest_file, "w") as writer:
     writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
 
-  with tf.gfile.GFile(output_null_log_odds_file, "w") as writer:
-    writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
-  return all_predictions, scores_diff_json
+  with tf.gfile.GFile(output_null_probs_file, "w") as writer:
+    writer.write(json.dumps(scores_null_json, indent=4) + "\n")
+
+  with tf.gfile.GFile(output_yes_probs_file, "w") as writer:
+    writer.write(json.dumps(scores_yes_json, indent=4) + "\n")
+
+  with tf.gfile.GFile(output_no_probs_file, "w") as writer:
+    writer.write(json.dumps(scores_no_json, indent=4) + "\n")
+
+  return all_predictions, scores_null_json, scores_yes_json, scores_no_json
 
 
 def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
                 eval_features, all_results, n_best_size, max_answer_length,
                 output_prediction_file, output_nbest_file,
-                output_null_log_odds_file):
-  predictions, na_probs = write_predictions_v2(
+                output_null_probs_file, output_yes_probs_file, output_no_probs_file):
+  predictions, null_probs, yes_probs, no_probs = write_predictions_v2(
       result_dict, cls_dict, eval_examples, eval_features,
       all_results, n_best_size, max_answer_length,
       output_prediction_file, output_nbest_file,
-      output_null_log_odds_file, None)
+      output_null_probs_file, output_yes_probs_file, output_no_probs_file)
 
   data_lookup = {}
   for qas_id in predictions.keys():
-    if qas_id not in na_probs:
+    if qas_id not in null_probs:
       continue
 
     id_items = qas_id.split('_q#')
@@ -1753,7 +1771,7 @@ def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
     turn_id = int(id_items[1])
 
     answer_text = predictions[qas_id]
-    null_score = sigmoid(na_probs[qas_id])
+    null_score = sigmoid(null_probs[qas_id])
 
     if id not in data_lookup:
       data_lookup[id] = []

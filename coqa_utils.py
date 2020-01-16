@@ -1751,7 +1751,7 @@ def write_predictions_v2(result_dict, cls_dict, all_examples, all_features,
   return all_predictions, scores_null_json, scores_yes_json, scores_no_json
 
 
-def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
+def evaluate_v2(result_dict, cls_dict, evaluator, eval_examples,
                 eval_features, all_results, n_best_size, max_answer_length,
                 output_prediction_file, output_nbest_file,
                 output_null_probs_file, output_yes_probs_file, output_no_probs_file):
@@ -1765,13 +1765,19 @@ def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
   for qas_id in predictions.keys():
     if qas_id not in null_probs:
       continue
+    if qas_id not in yes_probs:
+      continue
+    if qas_id not in no_probs:
+      continue
 
-    id_items = qas_id.split('_q#')
+    id_items = qas_id.split('_')
     id = id_items[0]
     turn_id = int(id_items[1])
 
     answer_text = predictions[qas_id]
-    null_score = sigmoid(null_probs[qas_id])
+    score_null = sigmoid(null_probs[qas_id])
+    score_yes = sigmoid(yes_probs[qas_id])
+    score_no = sigmoid(no_probs[qas_id])
 
     if id not in data_lookup:
       data_lookup[id] = []
@@ -1780,28 +1786,34 @@ def evaluate_v2(result_dict, cls_dict, prediction_json, eval_examples,
       "qas_id": qas_id,
       "turn_id": turn_id,
       "answer_text": answer_text,
-      "null_score": null_score
+      "score_null": score_null,
+      "score_yes": score_yes,
+      "score_no": score_no
     })
 
   threshold_metric = {}
-  for null_score_threshold in range(1, 10):
-    null_score_threshold /= 10.0
+  for score_threshold in range(1, 10):
+    score_threshold /= 10.0
     preds = collections.defaultdict(dict)
     for id in data_lookup.keys():
-      if id not in preds:
-        preds[id] = {}
-
       data_list = sorted(data_lookup[id], key=lambda x: x["turn_id"])
       for data in data_list:
-        preds[id][data["qas_id"]] = data["answer_text"] if data["null_score"] < null_score_threshold else "CANNOTANSWER", "x", "m"
+        score_list = [data["score_null"], data["score_yes"], data["score_no"]]
+        answer_list = ["unknown", "yes", "no"]
 
-    print('NULL Score Threshold: %.1f' % null_score_threshold)
-    metric_json = eval_fn(prediction_json, preds, False, 0.4)
-    metric_json["null_score_threshold"] = null_score_threshold
-    threshold_metric[null_score_threshold] = metric_json
+        score_idx = np.argmax(score_list)
+        if score_list[score_idx] >= score_threshold:
+          preds[(id, data["qas_id"])] = answer_list[score_idx]
+        else:
+          preds[(id, data["qas_id"])] = data["answer_text"]
 
-  threshold_metric_items = sorted(threshold_metric.items(), key=lambda x: x[1]["f1"] + x[1]["HEQ"], reverse=True)
-  best_null_score_threshold, best_metric_json = threshold_metric_items[0]
+    print('Score Threshold: %.1f' % score_threshold)
+    metric_json = evaluator.model_performance(preds)
+    metric_json["score_threshold"] = score_threshold
+    threshold_metric[score_threshold] = metric_json
+
+  threshold_metric_items = sorted(threshold_metric.items(), key=lambda x: x[1]["overall"], reverse=True)
+  best_score_threshold, best_metric_json = threshold_metric_items[0]
 
   return best_metric_json
 

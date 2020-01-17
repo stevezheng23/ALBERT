@@ -53,7 +53,7 @@ RawResult = collections.namedtuple("RawResult",
 RawResultV2 = collections.namedtuple(
     "RawResultV2",
     ["unique_id", "start_top_log_probs", "start_top_index",
-     "end_top_log_probs", "end_top_index", "cls_logits"])
+     "end_top_log_probs", "end_top_index", "null_logits", "yes_logits", "no_logits"])
 
 
 class CoqaExample(object):
@@ -1196,14 +1196,20 @@ def create_v2_model(albert_config, is_training, input_ids, input_mask,
                                     training=is_training)
     cls_logits = tf.layers.dense(
         ans_feature,
-        1,
+        3,
         kernel_initializer=modeling.create_initializer(
             albert_config.initializer_range),
         name="dense_1",
         use_bias=False)
-    cls_logits = tf.squeeze(cls_logits, -1)
 
-    return_dict["cls_logits"] = cls_logits
+    null_logits, yes_logits, no_logits = tf.split(cls_logits, num_or_size_splits=3, axis=-1)
+    null_logits = tf.squeeze(null_logits, -1)
+    yes_logits = tf.squeeze(yes_logits, -1)
+    no_logits = tf.squeeze(no_logits, -1)
+
+    return_dict["null_logits"] = null_logits
+    return_dict["yes_logits"] = yes_logits
+    return_dict["no_logits"] = no_logits
 
   return return_dict
 
@@ -1286,15 +1292,25 @@ def v2_model_fn_builder(albert_config, init_checkpoint, learning_rate,
 
       total_loss = (start_loss + end_loss) * 0.5
 
-      cls_logits = outputs["cls_logits"]
-      is_impossible = tf.reshape(features["is_impossible"], [-1])
-      regression_loss = tf.nn.sigmoid_cross_entropy_with_logits(
-          labels=tf.cast(is_impossible, dtype=tf.float32), logits=cls_logits)
-      regression_loss = tf.reduce_mean(regression_loss)
+      null_logits = outputs["null_logits"]
+      yes_logits = outputs["yes_logits"]
+      no_logits = outputs["no_logits"]
+      is_null = tf.reshape(features["is_null"], [-1])
+      is_yes = tf.reshape(features["is_yes"], [-1])
+      is_no = tf.reshape(features["is_no"], [-1])
+      null_loss = tf.nn.sigmoid_cross_entropy_with_logits(
+          labels=tf.cast(is_null, dtype=tf.float32), logits=null_logits)
+      null_loss = tf.reduce_mean(null_loss)
+      yes_loss = tf.nn.sigmoid_cross_entropy_with_logits(
+          labels=tf.cast(is_yes, dtype=tf.float32), logits=yes_logits)
+      yes_loss = tf.reduce_mean(yes_loss)
+      no_loss = tf.nn.sigmoid_cross_entropy_with_logits(
+          labels=tf.cast(is_no, dtype=tf.float32), logits=no_logits)
+      no_loss = tf.reduce_mean(no_loss)
 
       # note(zhiliny): by default multiply the loss by 0.5 so that the scale is
       # comparable to start_loss and end_loss
-      total_loss += regression_loss * 0.5
+      total_loss += (null_loss + yes_loss + no_loss) * 0.5
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
 

@@ -398,7 +398,9 @@ def main(_):
             [float(x) for x in result["end_top_log_probs"].flat])
         end_top_index = [int(x) for x in result["end_top_index"].flat]
 
-        cls_logits = float(result["cls_logits"].flat[0])
+        null_logits = float(result["null_logits"].flat[0])
+        yes_logits = float(result["yes_logits"].flat[0])
+        no_logits = float(result["no_logits"].flat[0])
         all_results.append(
             coqa_utils.RawResultV2(
                 unique_id=unique_id,
@@ -406,7 +408,9 @@ def main(_):
                 start_top_index=start_top_index,
                 end_top_log_probs=end_top_log_probs,
                 end_top_index=end_top_index,
-                cls_logits=cls_logits))
+                null_logits=null_logits,
+                yes_logits=yes_logits,
+                no_logits=no_logits))
 
       output_prediction_file = os.path.join(
           FLAGS.output_dir, "predictions.json")

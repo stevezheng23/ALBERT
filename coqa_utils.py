@@ -69,14 +69,18 @@ class CoqaExample(object):
                orig_answer_text=None,
                start_position=None,
                end_position=None,
-               is_impossible=False):
+               answer_type=None,
+               answer_subtype=None,
+               is_skipped=False):
     self.qas_id = qas_id
     self.question_text = question_text
     self.paragraph_text = paragraph_text
     self.orig_answer_text = orig_answer_text
     self.start_position = start_position
     self.end_position = end_position
-    self.is_impossible = is_impossible
+    self.answer_type = answer_type
+    self.answer_subtype = answer_subtype
+    self.is_skipped = is_skipped
 
   def __str__(self):
     return self.__repr__()
@@ -92,7 +96,11 @@ class CoqaExample(object):
     if self.start_position:
       s += ", end_position: %d" % (self.end_position)
     if self.start_position:
-      s += ", is_impossible: %r" % (self.is_impossible)
+      s += ", is_null: %r" % (self.is_null)
+    if self.start_position:
+      s += ", is_yes: %r" % (self.is_yes)
+    if self.start_position:
+      s += ", is_no: %r" % (self.is_no)
     return s
 
 
@@ -114,7 +122,9 @@ class InputFeatures(object):
                p_mask=None,
                start_position=None,
                end_position=None,
-               is_impossible=None):
+               is_null=None,
+               is_yes=None,
+               is_no=None):
     self.unique_id = unique_id
     self.example_index = example_index
     self.doc_span_index = doc_span_index
@@ -126,10 +136,12 @@ class InputFeatures(object):
     self.input_mask = input_mask
     self.segment_ids = segment_ids
     self.paragraph_len = paragraph_len
+    self.p_mask = p_mask
     self.start_position = start_position
     self.end_position = end_position
-    self.is_impossible = is_impossible
-    self.p_mask = p_mask
+    self.is_null = is_null
+    self.is_yes = is_yes
+    self.is_no = is_no
 
 
 def read_coqa_examples(input_file, is_training, max_answer_length):
@@ -686,25 +698,21 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
       tok_start_to_orig_index.append(start_orig_pos)
       tok_end_to_orig_index.append(end_orig_pos)
 
-    if not is_training:
-      tok_start_position = tok_end_position = None
+    tok_start_position = None
+    tok_end_position = None
+    if is_training:
+      if example.answer_type not in ["unknown", "yes", "no"] and not example.is_skipped and example.orig_answer_text:
+        start_position = example.start_position
+        end_position = start_position + len(example.orig_answer_text) - 1
+        start_chartok_pos = _convert_index(orig_to_chartok_index, start_position, is_start=True)
+        tok_start_position = chartok_to_tok_index[start_chartok_pos]
+        end_chartok_pos = _convert_index(orig_to_chartok_index, end_position, is_start=False)
+        tok_end_position = chartok_to_tok_index[end_chartok_pos]
+        assert tok_start_position <= tok_end_position
+      else:
+        tok_start_position = 0
+        tok_end_position = 0
 
-    if is_training and example.is_impossible:
-      tok_start_position = 0
-      tok_end_position = 0
-
-    if is_training and not example.is_impossible:
-      start_position = example.start_position
-      end_position = start_position + len(example.orig_answer_text) - 1
-
-      start_chartok_pos = _convert_index(orig_to_chartok_index, start_position,
-                                         is_start=True)
-      tok_start_position = chartok_to_tok_index[start_chartok_pos]
-
-      end_chartok_pos = _convert_index(orig_to_chartok_index, end_position,
-                                       is_start=False)
-      tok_end_position = chartok_to_tok_index[end_chartok_pos]
-      assert tok_start_position <= tok_end_position
 
     def _piece_to_id(x):
       if six.PY2 and isinstance(x, six.text_type):
@@ -788,68 +796,55 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
       assert len(input_mask) == max_seq_length
       assert len(segment_ids) == max_seq_length
 
-      span_is_impossible = example.is_impossible
       start_position = None
       end_position = None
-      if is_training and not span_is_impossible:
+      is_null = (example.answer_type == "unknown" or example.is_skipped)
+      is_yes = (example.answer_type == "yes")
+      is_no = (example.answer_type == "no")
+      if is_training:
         # For training, if our document chunk does not contain an annotation
         # we throw it out, since there is nothing to predict.
-        doc_start = doc_span.start
-        doc_end = doc_span.start + doc_span.length - 1
-        out_of_span = False
-        if not (tok_start_position >= doc_start and
-                tok_end_position <= doc_end):
-          out_of_span = True
-        if out_of_span:
-          # continue
+        if example.answer_type not in ["unknown", "yes", "no"] and not example.is_skipped and example.orig_answer_text:
+          doc_start = doc_span.start
+          doc_end = doc_span.start + doc_span.length - 1
+          if tok_start_position >= doc_start and tok_end_position <= doc_end:
+            doc_offset = len(query_tokens) + 2
+            start_position = tok_start_position - doc_start + doc_offset
+            end_position = tok_end_position - doc_start + doc_offset
+          else:
+            start_position = 0
+            end_position = 0
+            is_null = True
+        else:
           start_position = 0
           end_position = 0
-          span_is_impossible = True
-        else:
-          doc_offset = len(query_tokens) + 2
-          start_position = tok_start_position - doc_start + doc_offset
-          end_position = tok_end_position - doc_start + doc_offset
-
-      if is_training and span_is_impossible:
-        start_position = 0
-        end_position = 0
 
       if example_index < 20:
         tf.logging.info("*** Example ***")
         tf.logging.info("unique_id: %s" % (unique_id))
         tf.logging.info("example_index: %s" % (example_index))
         tf.logging.info("doc_span_index: %s" % (doc_span_index))
-        tf.logging.info("tok_start_to_orig_index: %s" % " ".join(
-            [str(x) for x in cur_tok_start_to_orig_index]))
-        tf.logging.info("tok_end_to_orig_index: %s" % " ".join(
-            [str(x) for x in cur_tok_end_to_orig_index]))
-        tf.logging.info("token_is_max_context: %s" % " ".join([
-            "%d:%s" % (x, y) for (x, y) in six.iteritems(token_is_max_context)
-        ]))
-        tf.logging.info("input_pieces: %s" % " ".join(
-            [tokenizer.sp_model.IdToPiece(x) for x in tokens]))
+        tf.logging.info("tok_start_to_orig_index: %s" % " ".join([str(x) for x in cur_tok_start_to_orig_index]))
+        tf.logging.info("tok_end_to_orig_index: %s" % " ".join([str(x) for x in cur_tok_end_to_orig_index]))
+        tf.logging.info("token_is_max_context: %s" % " ".join(["%d:%s" % (x, y) for (x, y) in six.iteritems(token_is_max_context)]))
+        tf.logging.info("input_pieces: %s" % " ".join([tokenizer.sp_model.IdToPiece(x) for x in tokens]))
         tf.logging.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-        tf.logging.info(
-            "input_mask: %s" % " ".join([str(x) for x in input_mask]))
-        tf.logging.info(
-            "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+        tf.logging.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+        tf.logging.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
 
-        if is_training and span_is_impossible:
-          tf.logging.info("impossible example span")
+        if is_training:
+          if example.answer_type not in ["unknown", "yes", "no"] and not example.is_skipped and example.orig_answer_text:
+            pieces = [tokenizer.sp_model.IdToPiece(token) for token in tokens[start_position: (end_position + 1)]]
+            answer_text = tokenizer.sp_model.DecodePieces(pieces)
+            tf.logging.info("start_position: %d" % (start_position))
+            tf.logging.info("end_position: %d" % (end_position))
+            tf.logging.info("answer: %s" % (tokenization.printable_text(answer_text)))
+            tf.logging.info("answer_type: %s" % example.answer_type)
+            tf.logging.info("answer_subtype: %s" % example.answer_subtype)
+          else:
+            tf.logging.info("answer_type: %s" % example.answer_type)
+            tf.logging.info("answer_subtype: %s" % example.answer_subtype)
 
-        if is_training and not span_is_impossible:
-          pieces = [tokenizer.sp_model.IdToPiece(token) for token in
-                    tokens[start_position: (end_position + 1)]]
-          answer_text = tokenizer.sp_model.DecodePieces(pieces)
-          tf.logging.info("start_position: %d" % (start_position))
-          tf.logging.info("end_position: %d" % (end_position))
-          tf.logging.info(
-              "answer: %s" % (tokenization.printable_text(answer_text)))
-
-          # note(zhiliny): With multi processing,
-          # the example_index is actually the index within the current process
-          # therefore we use example_index=None to avoid being used in the future.
-          # The current code does not use example_index of training data.
       if is_training:
         feat_example_index = None
       else:
@@ -867,19 +862,21 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
           input_mask=input_mask,
           segment_ids=segment_ids,
           paragraph_len=paragraph_len,
+          p_mask=p_mask,
           start_position=start_position,
           end_position=end_position,
-          is_impossible=span_is_impossible,
-          p_mask=p_mask)
+          is_null=is_null,
+          is_yes=is_yes,
+          is_no=is_no)
 
       # Run callback
       output_fn(feature)
 
       unique_id += 1
-      if span_is_impossible:
-        cnt_neg += 1
-      else:
+      if example.answer_type not in ["unknown", "yes", "no"] and not example.is_skipped and example.orig_answer_text:
         cnt_pos += 1
+      else:
+        cnt_neg += 1
 
   tf.logging.info("Total number of instances: {} = pos {} neg {}".format(
       cnt_pos + cnt_neg, cnt_pos, cnt_neg))
@@ -989,10 +986,9 @@ class FeatureWriter(object):
     if self.is_training:
       features["start_positions"] = create_int_feature([feature.start_position])
       features["end_positions"] = create_int_feature([feature.end_position])
-      impossible = 0
-      if feature.is_impossible:
-        impossible = 1
-      features["is_impossible"] = create_int_feature([impossible])
+      features["is_null"] = create_int_feature([1 if feature.is_null else 0])
+      features["is_yes"] = create_int_feature([1 if feature.is_yes else 0])
+      features["is_no"] = create_int_feature([1 if feature.is_no else 0])
 
     tf_example = tf.train.Example(features=tf.train.Features(feature=features))
     self._writer.write(tf_example.SerializeToString())
@@ -1018,7 +1014,9 @@ def input_fn_builder(input_file, seq_length, is_training,
   if is_training:
     name_to_features["start_positions"] = tf.FixedLenFeature([], tf.int64)
     name_to_features["end_positions"] = tf.FixedLenFeature([], tf.int64)
-    name_to_features["is_impossible"] = tf.FixedLenFeature([], tf.int64)
+    name_to_features["is_null"] = tf.FixedLenFeature([], tf.int64)
+    name_to_features["is_yes"] = tf.FixedLenFeature([], tf.int64)
+    name_to_features["is_no"] = tf.FixedLenFeature([], tf.int64)
 
   def _decode_record(record, name_to_features):
     """Decodes a record to a TensorFlow example."""
@@ -1326,7 +1324,9 @@ def v2_model_fn_builder(albert_config, init_checkpoint, learning_rate,
           "start_top_log_probs": outputs["start_top_log_probs"],
           "end_top_index": outputs["end_top_index"],
           "end_top_log_probs": outputs["end_top_log_probs"],
-          "cls_logits": outputs["cls_logits"]
+          "null_logits": outputs["null_logits"],
+          "yes_logits": outputs["yes_logits"],
+          "no_logits": outputs["no_logits"]
       }
       output_spec = contrib_tpu.TPUEstimatorSpec(
           mode=mode, predictions=predictions, scaffold_fn=scaffold_fn)

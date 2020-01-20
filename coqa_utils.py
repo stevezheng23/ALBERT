@@ -1759,6 +1759,8 @@ def evaluate_v2(result_dict, cls_dict, evaluator, eval_examples,
     print('Score Threshold: %.1f' % score_threshold)
     metric_json = evaluator.model_performance(preds)
     metric_json["score_threshold"] = score_threshold
+    metric_json["em"] = metric_json["overall"]["em"]
+    metric_json["f1"] = metric_json["overall"]["f1"]
     threshold_metric[score_threshold] = metric_json
 
   threshold_metric_items = sorted(threshold_metric.items(), key=lambda x: x[1]["overall"]["f1"], reverse=True)

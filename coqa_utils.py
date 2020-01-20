@@ -66,6 +66,7 @@ class CoqaExample(object):
                qas_id,
                question_text,
                paragraph_text,
+               raw_answer_text=None,
                orig_answer_text=None,
                start_position=None,
                end_position=None,
@@ -75,6 +76,7 @@ class CoqaExample(object):
     self.qas_id = qas_id
     self.question_text = question_text
     self.paragraph_text = paragraph_text
+    self.raw_answer_text = raw_answer_text
     self.orig_answer_text = orig_answer_text
     self.start_position = start_position
     self.end_position = end_position
@@ -88,9 +90,12 @@ class CoqaExample(object):
   def __repr__(self):
     s = ""
     s += "qas_id: %s" % (tokenization.printable_text(self.qas_id))
-    s += ", question_text: %s" % (
-        tokenization.printable_text(self.question_text))
+    s += ", question_text: %s" % (tokenization.printable_text(self.question_text))
     s += ", paragraph_text: [%s]" % (" ".join(self.paragraph_text))
+    if self.start_position:
+      s += ", raw_answer_text: %d" % (tokenization.printable_text(self.raw_answer_text))
+    if self.start_position:
+      s += ", orig_answer_text: %d" % (tokenization.printable_text(self.orig_answer_text))
     if self.start_position:
       s += ", start_position: %d" % (self.start_position)
     if self.start_position:
@@ -476,6 +481,7 @@ def read_coqa_examples(input_file, is_training, max_answer_length):
       question_text = get_question_text(question_history, question)
       question_history = get_question_history(question_history, question, answer, -1)
 
+      raw_answer_text = answer["input_text"].strip()
       orig_answer_text = ""
       start_position = -1
       end_position = -1
@@ -502,6 +508,7 @@ def read_coqa_examples(input_file, is_training, max_answer_length):
       example = CoqaExample(
         qas_id=qas_id,
         question_text=question_text,
+        raw_answer_text=raw_answer_text,
         orig_answer_text=orig_answer_text,
         start_position=start_position,
         end_position=end_position,

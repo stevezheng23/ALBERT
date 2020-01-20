@@ -436,6 +436,7 @@ def read_coqa_examples(input_file, is_training):
       example = CoqaExample(
         qas_id=qas_id,
         question_text=question_text,
+        paragraph_text=paragraph_text,
         raw_answer_text=raw_answer_text,
         orig_answer_text=orig_answer_text,
         start_position=start_position,

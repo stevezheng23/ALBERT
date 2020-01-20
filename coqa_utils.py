@@ -1516,7 +1516,7 @@ def accumulate_predictions_v2(result_dict, cls_dict, all_examples,
       if feature.unique_id not in result_dict[example_index]:
         result_dict[example_index][feature.unique_id] = {}
       result = unique_id_to_result[feature.unique_id]
-      cur_null_score = result.cls_logits
+      cur_null_score = result.null_logits
       cur_yes_score = result.yes_logits
       cur_no_score = result.no_logits
 

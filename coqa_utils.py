@@ -71,7 +71,6 @@ class CoqaExample(object):
                start_position=None,
                end_position=None,
                answer_type=None,
-               answer_subtype=None,
                is_skipped=False):
     self.qas_id = qas_id
     self.question_text = question_text
@@ -81,7 +80,6 @@ class CoqaExample(object):
     self.start_position = start_position
     self.end_position = end_position
     self.answer_type = answer_type
-    self.answer_subtype = answer_subtype
     self.is_skipped = is_skipped
 
   def __str__(self):
@@ -383,15 +381,15 @@ def read_coqa_examples(input_file, is_training, max_answer_length):
     norm_answer = normalize_answer(answer["input_text"])
 
     if norm_answer == "unknown" or "bad_turn" in answer:
-      return "unknown", None
+      return "unknown"
 
     if norm_answer == "yes":
-      return "yes", None
+      return "yes"
 
     if norm_answer == "no":
-      return "no", None
+      return "no"
 
-    return "span", None
+    return "span"
 
   def process_found_answer(raw_answer,
                            found_answer):
@@ -421,7 +419,7 @@ def read_coqa_examples(input_file, is_training, max_answer_length):
       qas_id = "{0}_{1}".format(data_id, i + 1)
 
       answer_text, span_start, span_end, match_score, is_skipped = get_answer_span(answer, paragraph_text)
-      answer_type, answer_subtype = get_answer_type(answer)
+      answer_type = get_answer_type(answer)
 
       question_text = get_question_text(question_history, question)
       question_history = get_question_history(question_history, question, answer, -1)
@@ -443,7 +441,6 @@ def read_coqa_examples(input_file, is_training, max_answer_length):
         start_position=start_position,
         end_position=end_position,
         answer_type=answer_type,
-        answer_subtype=answer_subtype,
         is_skipped=is_skipped)
 
       examples.append(example)
@@ -777,10 +774,8 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
             tf.logging.info("end_position: %d" % (end_position))
             tf.logging.info("answer: %s" % (tokenization.printable_text(answer_text)))
             tf.logging.info("answer_type: %s" % example.answer_type)
-            tf.logging.info("answer_subtype: %s" % example.answer_subtype)
           else:
             tf.logging.info("answer_type: %s" % example.answer_type)
-            tf.logging.info("answer_subtype: %s" % example.answer_subtype)
 
       if is_training:
         feat_example_index = None

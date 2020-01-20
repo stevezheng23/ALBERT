@@ -1761,7 +1761,7 @@ def evaluate_v2(result_dict, cls_dict, evaluator, eval_examples,
     metric_json["score_threshold"] = score_threshold
     threshold_metric[score_threshold] = metric_json
 
-  threshold_metric_items = sorted(threshold_metric.items(), key=lambda x: x[1]["overall"], reverse=True)
+  threshold_metric_items = sorted(threshold_metric.items(), key=lambda x: x[1]["overall"]["f1"], reverse=True)
   best_score_threshold, best_metric_json = threshold_metric_items[0]
 
   return best_metric_json

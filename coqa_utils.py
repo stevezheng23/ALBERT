@@ -1752,9 +1752,9 @@ def evaluate_v2(result_dict, cls_dict, evaluator, eval_examples,
 
         score_idx = np.argmax(score_list)
         if score_list[score_idx] >= score_threshold:
-          preds[(id, data["qas_id"])] = answer_list[score_idx]
+          preds[(id, data["turn_id"])] = answer_list[score_idx]
         else:
-          preds[(id, data["qas_id"])] = data["answer_text"]
+          preds[(id, data["turn_id"])] = data["answer_text"]
 
     print('Score Threshold: %.1f' % score_threshold)
     metric_json = evaluator.model_performance(preds)

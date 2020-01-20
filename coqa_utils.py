@@ -147,7 +147,7 @@ class InputFeatures(object):
     self.is_no = is_no
 
 
-def read_coqa_examples(input_file, is_training, max_answer_length):
+def read_coqa_examples(input_file, is_training):
   """Read a CoQA json file into a list of CoqaExample."""
   with tf.gfile.Open(input_file, "r") as reader:
     input_data = json.load(reader)["data"]

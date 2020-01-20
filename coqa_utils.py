@@ -360,26 +360,10 @@ def read_coqa_examples(input_file, is_training, max_answer_length):
     if norm_answer in ["no", "no not at all", "not", "not at all", "not yet", "not really"]:
       return "no"
 
-    number_lookup = {
-      "zero": "none", "0": "none", "1": "one", "2": "two", "3": "three", "4": "four",
-      "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine", "10": "ten"
-    }
-
-    if norm_answer in number_lookup:
-      return number_lookup[norm_answer]
-
-    if norm_answer.startswith("at least") and norm_answer[8:].strip().lower() in number_lookup:
-      norm_answer = norm_answer[8:].strip().lower()
-      return number_lookup[norm_answer]
-
     return norm_answer
 
   def normalize_token(token):
     if token.endswith("'s"):
-      token = token[:-2]
-
-    if (token.endswith("st") or token.endswith("nd") or token.endswith("rd") or token.endswith("th")) and token[
-                                                                                                          :-2].isnumeric():
       token = token[:-2]
 
     if "-" in token:
@@ -388,12 +372,14 @@ def read_coqa_examples(input_file, is_training, max_answer_length):
     if "," in token and not token.split(",")[0].isnumeric():
       token = token.split(",")[0]
 
+    if "." in token and not token.split(".")[0].isnumeric():
+      token = token.split(".")[0]
+
     norm_token = CoQAEvaluator.normalize_answer(token)
 
     return norm_token
 
-  def get_answer_type(question,
-                      answer):
+  def get_answer_type(answer):
     norm_answer = normalize_answer(answer["input_text"])
 
     if norm_answer == "unknown" or "bad_turn" in answer:
@@ -404,21 +390,6 @@ def read_coqa_examples(input_file, is_training, max_answer_length):
 
     if norm_answer == "no":
       return "no", None
-
-    if norm_answer in ["none", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]:
-      return "number", norm_answer
-
-    norm_question_tokens = CoQAEvaluator.normalize_answer(question["input_text"]).split(" ")
-    if "or" in norm_question_tokens:
-      index = norm_question_tokens.index("or")
-      if index - 1 >= 0 and index + 1 < len(norm_question_tokens):
-        if norm_answer == norm_question_tokens[index - 1]:
-          norm_answer = "option_a"
-        elif norm_answer == norm_question_tokens[index + 1]:
-          norm_answer = "option_b"
-
-    if norm_answer in ["option_a", "option_b"]:
-      return "option", norm_answer
 
     return "span", None
 
@@ -436,32 +407,6 @@ def read_coqa_examples(input_file, is_training, max_answer_length):
 
     return ' '.join(found_answer_tokens)
 
-  def generate_final_answer(question_text,
-                            answer_text,
-                            answer_type,
-                            answer_subtype):
-    if answer_type == "span" and answer_text:
-      final_answer_text = answer_text
-    elif answer_type == "unknown":
-      final_answer_text = "unknown"
-    elif answer_type in ["yes", "no"]:
-      final_answer_text = answer_type
-    elif answer_type == "number":
-      final_answer_text = answer_subtype
-    elif answer_type == "option":
-      norm_question_tokens = CoQAEvaluator.normalize_answer(question_text).split(" ")
-      if "or" in norm_question_tokens:
-        index = norm_question_tokens.index("or")
-        if index - 1 >= 0 and index + 1 < len(norm_question_tokens):
-          if answer_subtype == "option_a":
-            final_answer_text = norm_question_tokens[index - 1]
-          if answer_subtype == "option_b":
-            final_answer_text = norm_question_tokens[index + 1]
-    else:
-      final_answer_text = ""
-
-    return final_answer_text
-
   examples = []
   for data in input_data:
     data_id = data["id"]
@@ -476,7 +421,7 @@ def read_coqa_examples(input_file, is_training, max_answer_length):
       qas_id = "{0}_{1}".format(data_id, i + 1)
 
       answer_text, span_start, span_end, match_score, is_skipped = get_answer_span(answer, paragraph_text)
-      answer_type, answer_subtype = get_answer_type(question, answer)
+      answer_type, answer_subtype = get_answer_type(answer)
 
       question_text = get_question_text(question_history, question)
       question_history = get_question_history(question_history, question, answer, -1)
@@ -485,25 +430,10 @@ def read_coqa_examples(input_file, is_training, max_answer_length):
       orig_answer_text = ""
       start_position = -1
       end_position = -1
-      if answer_type == "span":
-        if not is_skipped:
-          orig_answer_text = process_found_answer(answer["input_text"], answer_text)
-          start_position = span_start
-        elif answer["span_text"]:
-          span_tokens = whitespace_tokenize(answer["span_text"])
-          if len(span_tokens) <= max_answer_length:
-            orig_answer_text = answer["span_text"]
-            start_position = answer["span_start"]
-            is_skipped = False
-
-      final_answer_text = generate_final_answer(question["input_text"], orig_answer_text, answer_type, answer_subtype)
-      if answer_type != "span":
-        if match_score == 1.0 and CoQAEvaluator.normalize_answer(answer_text) != final_answer_text:
-          orig_answer_text = process_found_answer(answer["input_text"], answer_text)
-          start_position = span_start
-          answer_type, answer_subtype = "span", None
-
-        is_skipped = False
+      if answer_type == "span" and not is_skipped:
+        orig_answer_text = process_found_answer(answer["input_text"], answer_text)
+        start_position = span_start
+        end_position = start_position + len(orig_answer_text) - 1
 
       example = CoqaExample(
         qas_id=qas_id,

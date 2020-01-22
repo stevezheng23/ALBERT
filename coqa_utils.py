@@ -261,8 +261,7 @@ def read_coqa_examples(input_file, is_training):
 
   def find_answer_span(answer_text,
                        rationale_text,
-                       rationale_start,
-                       rationale_end):
+                       rationale_start):
     idx = rationale_text.find(answer_text)
     answer_start = rationale_start + idx
     answer_end = answer_start + len(answer_text) - 1
@@ -290,8 +289,7 @@ def read_coqa_examples(input_file, is_training):
     rationale_answer_start = -1
     rationale_answer_end = -1
     if not (rationale_start == -1 or rationale_end == -1):
-      rationale_word_start, rationale_word_end = char_span_to_word_span(rationale_start, rationale_end,
-                                                                        paragraph_tokens)
+      rationale_word_start, rationale_word_end = char_span_to_word_span(rationale_start, rationale_end, paragraph_tokens)
       rationale_tokens = paragraph_tokens[rationale_word_start:rationale_word_end + 1]
       rationale_norm_tokens = [(norm_func(token), start, end) for token, start, end in rationale_tokens]
       (rationale_match_score, rationale_answer_start,
@@ -325,19 +323,10 @@ def read_coqa_examples(input_file, is_training):
       span_text = paragraph_text[span_start:span_end].lower()
 
     if input_text in span_text:
-      span_start, span_end = find_answer_span(input_text, span_text, span_start, span_end)
+      span_start, span_end = find_answer_span(input_text, span_text, span_start)
       match_score = 1.0
     else:
-      match_score_1, span_start_1, span_end_1 = match_answer_span(input_text, span_start, span_end,
-                                                                  paragraph_text.lower())
-      match_score_2, span_start_2, span_end_2 = match_answer_span(input_text,
-                                                                  span_start, span_end, paragraph_text.lower())
-      if match_score_2 > match_score_1:
-        span_start, span_end = span_start_2, span_end_2
-        match_score = match_score_2
-      else:
-        span_start, span_end = span_start_1, span_end_1
-        match_score = match_score_1
+      match_score, span_start, span_end = match_answer_span(input_text, span_start, span_end, paragraph_text.lower())
 
     if span_start == -1 or span_end == -1:
       answer_text = ""
@@ -358,23 +347,6 @@ def read_coqa_examples(input_file, is_training):
       return "no"
 
     return norm_answer
-
-  def normalize_token(token):
-    if token.endswith("'s"):
-      token = token[:-2]
-
-    if "-" in token:
-      token = token.split("-")[0]
-
-    if "," in token and not token.split(",")[0].isnumeric():
-      token = token.split(",")[0]
-
-    if "." in token and not token.split(".")[0].isnumeric():
-      token = token.split(".")[0]
-
-    norm_token = CoQAEvaluator.normalize_answer(token)
-
-    return norm_token
 
   def get_answer_type(answer):
     norm_answer = normalize_answer(answer["input_text"])

@@ -331,8 +331,7 @@ def read_coqa_examples(input_file, is_training):
       match_score_1, span_start_1, span_end_1 = match_answer_span(input_text, span_start, span_end,
                                                                   paragraph_text.lower())
       match_score_2, span_start_2, span_end_2 = match_answer_span(input_text,
-                                                                  span_start, span_end, paragraph_text.lower(),
-                                                                  normalize_token)
+                                                                  span_start, span_end, paragraph_text.lower())
       if match_score_2 > match_score_1:
         span_start, span_end = span_start_2, span_end_2
         match_score = match_score_2

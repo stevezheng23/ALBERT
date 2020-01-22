@@ -1720,7 +1720,7 @@ def evaluate_v2(result_dict, cls_dict, evaluator, eval_examples,
       continue
 
     id_items = qas_id.split('_')
-    id = id_items[0]
+    story_id = id_items[0]
     turn_id = int(id_items[1])
 
     answer_text = predictions[qas_id]
@@ -1728,11 +1728,12 @@ def evaluate_v2(result_dict, cls_dict, evaluator, eval_examples,
     score_yes = sigmoid(yes_probs[qas_id])
     score_no = sigmoid(no_probs[qas_id])
 
-    if id not in data_lookup:
-      data_lookup[id] = []
+    if story_id not in data_lookup:
+      data_lookup[story_id] = []
 
-    data_lookup[id].append({
+    data_lookup[story_id].append({
       "qas_id": qas_id,
+      "story_id": story_id,
       "turn_id": turn_id,
       "answer_text": answer_text,
       "score_null": score_null,
